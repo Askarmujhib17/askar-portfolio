@@ -1,5 +1,6 @@
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { supabase } from './lib/supabase'
 import {
   House,
   UserRound,
@@ -24,6 +25,44 @@ const navigation = [
 function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [active, setActive] = useState('home')
+  const [projects, setProjects] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [projectError, setProjectError] = useState('')
+
+  
+  
+useEffect(() => {
+  let cancelled = false
+
+  async function fetchProjects() {
+    const { data, error } = await supabase
+      .from('projects')
+      .select(
+        'id, title, description, category, technologies, image_url, github_url, demo_url'
+      )
+      .eq('is_published', true)
+      .order('created_at', { ascending: false })
+
+    if (cancelled) return
+
+    if (error) {
+      console.error('Supabase error:', error.message)
+      setProjectError('Unable to load projects right now.')
+    } else {
+      setProjects(data ?? [])
+    }
+
+    setLoading(false)
+  }
+
+  fetchProjects()
+
+  return () => {
+    cancelled = true
+  }
+}, [])
+
+
 
   function navigate(id) {
     setActive(id)
@@ -234,39 +273,114 @@ function App() {
           </p>
         </section>
 
-        {/* PROJECTS */}
-        <section
-          id="projects"
-          className="min-h-[60vh] scroll-mt-24 border-t border-slate-800 py-24"
+        
+{/* PROJECTS */}
+<section
+  id="projects"
+  className="min-h-[60vh] scroll-mt-24 border-t border-slate-800 py-24"
+>
+  <p className="mb-3 text-sm font-medium text-cyan-400">
+    03 / PROJECTS
+  </p>
+
+  <h2 className="text-3xl font-bold sm:text-4xl">
+    Featured Projects
+    <span className="text-cyan-400">.</span>
+  </h2>
+
+  <p className="mt-6 max-w-2xl leading-8 text-slate-400">
+    A collection of my networking labs, infrastructure
+    projects, and software development work.
+  </p>
+
+  {loading ? (
+    <p className="mt-10 text-slate-400">
+      Loading projects...
+    </p>
+  ) : projectError ? (
+    <p className="mt-10 text-red-400" role="alert">
+      {projectError}
+    </p>
+  ) : projects.length === 0 ? (
+    <p className="mt-10 text-slate-400">
+      No published projects yet.
+    </p>
+  ) : (
+    <div className="mt-10 grid gap-6 md:grid-cols-2">
+      {projects.map((project) => (
+        <article
+          key={project.id}
+          className="overflow-hidden rounded-xl border border-slate-800 bg-[#111b2e] transition duration-300 hover:-translate-y-1 hover:border-cyan-400/50"
         >
-          <p className="mb-3 text-sm font-medium text-cyan-400">
-            03 / PROJECTS
-          </p>
+          {project.image_url ? (
+            <img
+              src={project.image_url}
+              alt={project.title}
+              loading="lazy"
+              className="h-48 w-full object-cover"
+            />
+          ) : (
+            <div className="flex h-40 items-center justify-center bg-slate-800/50">
+              <FolderGit2 size={40} className="text-cyan-400" />
+            </div>
+          )}
 
-          <h2 className="text-3xl font-bold sm:text-4xl">
-            Featured Projects<span className="text-cyan-400">.</span>
-          </h2>
+          <div className="p-6">
+            <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400">
+              {project.category || 'Project'}
+            </p>
 
-          <p className="mt-6 max-w-2xl leading-8 text-slate-400">
-            A collection of networking labs, infrastructure projects,
-            and software development work.
-          </p>
+            <h3 className="mt-3 text-xl font-semibold">
+              {project.title}
+            </h3>
 
-          <div className="mt-10 grid gap-6 md:grid-cols-2">
-            <div className="rounded-xl border border-slate-800 bg-[#111b2e] p-6 transition hover:border-cyan-400/50">
-              <FolderGit2 className="mb-5 text-cyan-400" size={28} />
+            <p className="mt-3 text-sm leading-7 text-slate-400">
+              {project.description}
+            </p>
 
-              <h3 className="text-xl font-semibold">
-                Project Coming Soon
-              </h3>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {(project.technologies ?? []).map((tech) => (
+                <span
+                  key={tech}
+                  className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300"
+                >
+                  {tech}
+                </span>
+              ))}
+            </div>
 
-              <p className="mt-3 text-sm leading-7 text-slate-400">
-                My future networking and infrastructure projects
-                will appear here.
-              </p>
+            <div className="mt-6 flex flex-wrap gap-5">
+              {project.github_url && (
+                <a
+                  href={project.github_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-slate-300 transition hover:text-cyan-400"
+                >
+                  <FaGithub size={18} />
+                  Source Code
+                </a>
+              )}
+
+              {project.demo_url && (
+                <a
+                  href={project.demo_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-slate-300 transition hover:text-cyan-400"
+                >
+                  <ArrowRight size={18} />
+                  Live Demo
+                </a>
+              )}
             </div>
           </div>
-        </section>
+        </article>
+      ))}
+    </div>
+  )}
+</section>
+
 
         {/* CONTACT */}
         <section
