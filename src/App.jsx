@@ -132,7 +132,7 @@ function App() {
           className="flex min-h-screen flex-col justify-center py-24"
         >
           <p className="mb-4 text-sm font-medium tracking-[0.2em] text-cyan-400">
-            HELLO, I'M
+            WELCOME TO MY PORTFOLIO
           </p>
 
           <h1 className="text-5xl font-bold tracking-tight sm:text-6xl xl:text-7xl">
