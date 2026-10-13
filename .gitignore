@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Cloudflare runtime secrets (never commit)
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+.wrangler
