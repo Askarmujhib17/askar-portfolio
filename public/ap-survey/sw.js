@@ -1,4 +1,4 @@
-const CACHE='ap-survey-shell-v2';
+const CACHE='ap-survey-shell-v3';
 const FILES=['/ap-survey/','/ap-survey/app.js','/ap-survey/schema.js'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('ap-survey-shell-')&&key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim()));});

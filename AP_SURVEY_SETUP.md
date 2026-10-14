@@ -118,3 +118,28 @@ Saved on device / Syncing / Synced ✓ / Sync failed. It appears on both entry a
 list views; saved rows also show their sync state. New entries still upload
 immediately, including entries captured while a previous sync is finishing.
 No batching, timestamp stamping, or school-specific PINs were added.
+
+## Combined TR and expansion survey
+
+Before deployment, run `supabase/migrations/20261014_ap_survey_expansion.sql`.
+It adds nullable `additional_ap_required`, nullable `expansion_cabling`, and
+`remarks` (empty by default). Existing records remain expansion-not-recorded;
+no AP or cable quantity is inferred. Old clients preserve recorded expansion
+and remarks when they omit these fields.
+
+New Classrooms entries default to expansion Yes, with an editable No exception.
+Other new categories default to No. Explicit user choices and existing records
+are preserved when the category changes. Both jobs use one location section,
+one LAN/server room, and a single shared image. A photo is required whenever
+relocation or expansion is Yes. The image is optional otherwise and retained
+when jobs are switched off, so it is not lost by changing an answer.
+
+Relocation and expansion have separate Yes / No / Not assessed cabling answers.
+The review page shows filtered and full-register totals. Each Yes means one
+new cable run, and one room can count twice. Pending cabling assessments and
+expansion-not-recorded rooms are shown separately. Totals include local unsynced
+entries, so confirm sync state before treating them as the final shared survey.
+Remarks apply to the whole room, are optional, and are included in editing,
+CSV and JSON backups. Expansion filtering is available alongside category,
+LAN/server-room and text filters. No additional image copy is uploaded for
+expansion, and summary calculations run locally.

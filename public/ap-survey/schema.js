@@ -2,7 +2,7 @@ export const categories = ['', 'art and craft room', 'basketball court', 'cantee
 export const lanRooms = Array.from({ length: 8 }, (_, i) => `Lan Room ${i + 1}`).concat('Server Room');
 export const networkTypes = ['MOE-Owned', 'School-Owned', 'Unknown'];
 export const cablingOptions = ['Yes', 'No', 'Not assessed'];
-export const fields = ['building', 'floor', 'room', 'category', 'network', 'model', 'hostname', 'serial', 'mac', 'lanRoom', 'relocation', 'reason', 'newCabling'];
+export const fields = ['building', 'floor', 'room', 'category', 'network', 'model', 'hostname', 'serial', 'mac', 'lanRoom', 'relocation', 'reason', 'newCabling', 'additionalAP', 'expansionCabling', 'remarks'];
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export function validateEntry(entry) {
   if (!entry || !UUID.test(entry.id || '')) return 'Invalid entry ID.';
@@ -19,5 +19,21 @@ export function validateEntry(entry) {
   if (entry.relocation === 'Yes' && !entry.reason.trim()) return 'Enter a relocation reason.';
   if (entry.newCabling !== undefined && typeof entry.newCabling !== 'string') return 'Invalid cabling choice.';
   if (entry.relocation === 'Yes' && entry.newCabling !== undefined && !cablingOptions.includes(entry.newCabling)) return 'Choose whether new cabling is required.';
+  if (entry.additionalAP !== undefined && !['Yes','No',''].includes(entry.additionalAP)) return 'Invalid expansion choice.';
+  if (entry.additionalAP === 'Yes' && !cablingOptions.includes(entry.expansionCabling)) return 'Choose cabling for the additional AP.';
+  if (entry.remarks !== undefined && (typeof entry.remarks !== 'string' || entry.remarks.length > 3000)) return 'Remarks must be at most 3000 characters.';
   return '';
+}
+
+export function normalizeExpansion(r) {
+  return {...r,additionalAP:r.additionalAP ?? '',expansionCabling:r.additionalAP==='Yes'?(r.expansionCabling||'Not assessed'):'',remarks:r.remarks ?? ''};
+}
+export function surveyTotals(records) {
+  const t={rooms:records.length,additionalAPs:0,relocationCables:0,expansionCables:0,pendingCabling:0,expansionUnrecorded:0};
+  for(const r of records){
+    if(r.relocation==='Yes'){if(r.newCabling==='Yes')t.relocationCables++;else if(!r.newCabling||r.newCabling==='Not assessed')t.pendingCabling++;}
+    if(r.additionalAP==='Yes'){t.additionalAPs++;if(r.expansionCabling==='Yes')t.expansionCables++;else if(!r.expansionCabling||r.expansionCabling==='Not assessed')t.pendingCabling++;}
+    else if(!r.additionalAP)t.expansionUnrecorded++;
+  }
+  return {...t,totalCables:t.relocationCables+t.expansionCables};
 }

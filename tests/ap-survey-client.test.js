@@ -2,16 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs';
-import { fields, categories, lanRooms, validateEntry } from '../public/ap-survey/schema.js';
+import { fields, categories, lanRooms, validateEntry, normalizeExpansion, surveyTotals } from '../public/ap-survey/schema.js';
 const script=fs.readFileSync(new URL('../public/ap-survey/app.js',import.meta.url),'utf8').replace(/^import[^\n]+\n/,'')+'\nglobalThis.testApi={enqueue,sync,refresh,saveState,mutate,resetForm,render,getRecords:()=>records,getQueue:()=>queue,setEditing:(id,version)=>{editing=id;editVersion=version},setPhoto:(photo)=>currentPhoto=photo};';
-const entry={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 2',relocation:'No',reason:'',newCabling:''};
+const entry={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 2',relocation:'No',reason:'',newCabling:'',additionalAP:'No',expansionCabling:'',remarks:''};
 async function browser(){
- const nodes={};const node=id=>nodes[id]??={value:['categoryFilter','lanFilter'].includes(id)?'all':id==='network'?'MOE-Owned':'',textContent:'',dataset:{},disabled:false,classList:{add(){},remove(){},toggle(){}},append(){},focus(){},reportValidity(){return true},querySelector(){return node('emptyTitle')},reset(){for(const f of fields)node(f).value=f==='network'?'MOE-Owned':'';node('photo').value='';}};
+ const nodes={};const node=id=>nodes[id]??={value:['categoryFilter','lanFilter','expansionFilter'].includes(id)?'all':id==='network'?'MOE-Owned':'',textContent:'',dataset:{},disabled:false,classList:{add(){},remove(){},toggle(){}},append(){},focus(){},reportValidity(){return true},querySelector(){return node('emptyTitle')},reset(){for(const f of fields)node(f).value=f==='network'?'MOE-Owned':'';node('photo').value='';}};
  let stored,failStorage=false;
  const transaction=()=>{const tx={objectStore:()=>({get:()=>{const req={};queueMicrotask(()=>{req.result=stored;req.onsuccess?.();});return req;},put(value){queueMicrotask(()=>{if(failStorage){tx.error=new Error('Full');tx.onerror?.();}else{stored=structuredClone(value);tx.oncomplete?.();}});}})};return tx;};
  const local={};let uuid=1;
  const state={remote:[],writes:0,failApi:0};
- const context={console,fields,categories,lanRooms,validateEntry,structuredClone,Blob,URL,setTimeout,FileReader:class{},setInterval:()=>{},crypto:{randomUUID:()=>`ba8b95b5-8fb0-4484-a5a3-${String(uuid++).padStart(12,'0')}`},navigator:{onLine:true},window:{scrollTo(){},addEventListener(){}},document:{getElementById:node,createElement:()=>({}),body:{append(){}}},localStorage:{getItem:k=>local[k],setItem:(k,v)=>local[k]=v,removeItem:k=>delete local[k]},indexedDB:{open:()=>{const req={};queueMicrotask(()=>{req.result={transaction,createObjectStore(){}};req.onsuccess();});return req;}},confirm:()=>true,fetch:async(url,opts)=>{
+ const context={console,fields,categories,lanRooms,validateEntry,normalizeExpansion,surveyTotals,structuredClone,Blob,URL,setTimeout,FileReader:class{},setInterval:()=>{},crypto:{randomUUID:()=>`ba8b95b5-8fb0-4484-a5a3-${String(uuid++).padStart(12,'0')}`},navigator:{onLine:true},window:{scrollTo(){},addEventListener(){}},document:{getElementById:node,querySelector:()=>node('photoLabel'),createElement:()=>({}),body:{append(){}}},localStorage:{getItem:k=>local[k],setItem:(k,v)=>local[k]=v,removeItem:k=>delete local[k]},indexedDB:{open:()=>{const req={};queueMicrotask(()=>{req.result={transaction,createObjectStore(){}};req.onsuccess();});return req;}},confirm:()=>true,fetch:async(url,opts)=>{
  if(state.failApi) return new Response(JSON.stringify({error:'Test failure'}),{status:state.failApi});
  if(url.endsWith('/session'))return Response.json({ok:true});
  if(url.includes('entries?'))return Response.json({entries:state.remote,nextOffset:null});
@@ -50,4 +50,19 @@ test('failed server submission shows failed status and keeps the draft',async()=
 });
 test('offline submission status says saved on device, never synced',async()=>{
  const b=await browser();b.context.navigator.onLine=false;for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});assert.match(b.node('saveStatus').textContent,/Saved on device/);assert.doesNotMatch(b.node('saveStatus').textContent,/Synced ✓/);
+});
+test('classrooms default expansion Yes, respect exceptions and require shared photo',async()=>{
+ const b=await browser();for(const f of fields)b.node(f).value=entry[f];b.node('category').onchange();assert.equal(b.node('additionalAP').value,'Yes');assert.equal(b.node('photo').required,true);
+ b.node('additionalAP').value='No';b.node('additionalAP').onchange();b.node('category').value='ISH';b.node('category').onchange();assert.equal(b.node('additionalAP').value,'No');assert.equal(b.node('photo').required,false);
+ b.node('additionalAP').value='Yes';b.node('expansionCabling').value='Not assessed';b.node('additionalAP').onchange();await b.node('form').onsubmit({preventDefault(){}});assert.equal(b.api.getQueue().length,0);assert.match(b.node('notice').textContent,/wide-angle room photo/);
+});
+test('cabling totals count two jobs per room, ignore inactive answers and flag unassessed',()=>{
+ const totals=surveyTotals([{...entry,relocation:'Yes',newCabling:'Yes',additionalAP:'Yes',expansionCabling:'Yes'},{...entry,additionalAP:'Yes',expansionCabling:'Not assessed'},{...entry,additionalAP:'',newCabling:'Yes'}]);
+ assert.equal(totals.totalCables,2);assert.equal(totals.relocationCables,1);assert.equal(totals.expansionCables,1);assert.equal(totals.pendingCabling,1);assert.equal(totals.additionalAPs,2);assert.equal(totals.expansionUnrecorded,1);
+ assert.equal(normalizeExpansion(entry).additionalAP,'No');assert.equal(normalizeExpansion({id:'legacy'}).additionalAP,'');
+});
+test('expansion filter changes review totals and editing restores remarks',async()=>{
+ const b=await browser();const r={...entry,additionalAP:'Yes',expansionCabling:'Yes',remarks:'Cable route pending'};
+ await b.api.saveState([r,{...entry,id:'other',additionalAP:'No'}],[]);b.node('expansionFilter').value='Yes';b.api.render();assert.equal(b.node('listCount').textContent,'Showing 1 of 2 total entries');assert.match(b.node('cablingSummary').innerHTML,/Total new cable runs/);
+ await b.node('rows').onclick({target:{dataset:{edit:r.id}}});assert.equal(b.node('remarks').value,r.remarks);assert.equal(b.node('additionalAP').value,'Yes');assert.equal(b.node('expansionCabling').value,'Yes');
 });

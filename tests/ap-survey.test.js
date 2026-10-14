@@ -74,3 +74,17 @@ test('all network options accepted and cabling persisted in relocation record',a
  response=await handle(request('entries/'+id,'PUT',{entry:legacy,expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);saved=(await response.json()).entry;assert.equal(saved.newCabling,'No');
  response=await handle(request('entries/'+id,'PUT',{entry:{...entry,network:'Unknown'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);assert.equal(db.rows[0].new_cabling,null);assert.equal((await response.json()).entry.newCabling,'');
 });
+test('expansion requires one shared photo, saves both cabling answers and remarks',async()=>{
+ const cookie=await session(),db=fakeDb();
+ const expansion={...entry,additionalAP:'Yes',expansionCabling:'Yes',remarks:'Confirm route with ICT manager'};
+ let response=await handle(request('entries','POST',{entry:expansion},cookie),env,db);assert.equal(response.status,400);
+ response=await handle(request('entries','POST',{entry:{...expansion,relocation:'Yes',newCabling:'Yes',reason:'Near fan',photo:'data:image/jpeg;base64,/9j/AA=='}},cookie),env,db);
+ assert.equal(response.status,201);let saved=(await response.json()).entry;assert.equal(saved.additionalAP,'Yes');assert.equal(saved.expansionCabling,'Yes');assert.equal(saved.remarks,expansion.remarks);assert.equal(db.uploads,1);
+ const legacy={...entry,relocation:'Yes',newCabling:'Yes',reason:'Updated clearance note'};
+ response=await handle(request('entries/'+id,'PUT',{entry:legacy,expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);saved=(await response.json()).entry;assert.equal(saved.additionalAP,'Yes');assert.equal(saved.remarks,expansion.remarks);assert.equal(db.uploads,1);
+ response=await handle(request('entries/'+id,'PUT',{entry:{...entry,additionalAP:'No',expansionCabling:'',remarks:''},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);saved=(await response.json()).entry;assert.equal(saved.additionalAP,'No');assert.equal(saved.expansionCabling,'');assert.equal(saved.hasPhoto,true);
+});
+test('legacy records do not get inferred expansion and remarks are bounded',async()=>{
+ const db=fakeDb(),cookie=await session();const response=await handle(request('entries','POST',{entry},cookie),env,db);assert.equal(response.status,201);const saved=(await response.json()).entry;assert.equal(saved.additionalAP,'');assert.equal(saved.remarks,'');
+ assert.ok(validateEntry({...entry,additionalAP:'Yes',expansionCabling:'Maybe'}));assert.ok(validateEntry({...entry,remarks:'a'.repeat(3001)}));
+});
