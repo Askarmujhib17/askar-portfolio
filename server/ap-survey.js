@@ -63,11 +63,11 @@ export async function readBody(request, max = MAX_BODY) {
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON.'); }
 }
 function dbError(error) {
-  if (error && /new_cabling/.test(error.message || '')) throw new HttpError(503, 'Database upgrade needed: run the new-cabling SQL migration in Supabase. Your draft remains on this device.');
+  if (error && /new_cabling|additional_ap_required|expansion_cabling|remarks/.test(error.message || '')) throw new HttpError(503, 'Database upgrade needed: run the latest survey SQL migration in Supabase. Your draft remains on this device.');
   if (error) throw new HttpError(503, 'Database request failed. Check the Supabase table and server settings; your form has not been cleared.');
 }
 export function fromRow(row) {
-  return { id: row.id, building: row.building, floor: row.floor, room: row.room, category: row.category, network: row.network_type, model: row.old_ap_model, hostname: row.old_ap_hostname, serial: row.old_ap_serial, mac: row.old_ap_mac, lanRoom: row.lan_room, relocation: row.relocation_required ? 'Yes' : 'No', reason: row.relocation_reason, newCabling: row.relocation_required ? (row.new_cabling || 'Not assessed') : '', hasPhoto: !!row.photo_path, updatedAt: row.updated_at, createdAt: row.created_at };
+  return { id: row.id, building: row.building, floor: row.floor, room: row.room, category: row.category, network: row.network_type, model: row.old_ap_model, hostname: row.old_ap_hostname, serial: row.old_ap_serial, mac: row.old_ap_mac, lanRoom: row.lan_room, relocation: row.relocation_required ? 'Yes' : 'No', reason: row.relocation_reason, newCabling: row.relocation_required ? (row.new_cabling || 'Not assessed') : '', additionalAP:row.additional_ap_required===true?'Yes':row.additional_ap_required===false?'No':'', expansionCabling:row.additional_ap_required===true?(row.expansion_cabling||'Not assessed'):'', remarks:row.remarks||'', hasPhoto: !!row.photo_path, updatedAt: row.updated_at, createdAt: row.created_at };
 }
 function toRow(entry) {
   return { id: entry.id, building: entry.building.trim(), floor: entry.floor.trim(), room: entry.room.trim(), category: entry.category, network_type: entry.network, old_ap_model: entry.model.trim(), old_ap_hostname: entry.hostname.trim(), old_ap_serial: entry.serial.trim(), old_ap_mac: entry.mac.trim(), lan_room: entry.lanRoom, relocation_required: entry.relocation === 'Yes', relocation_reason: entry.relocation === 'Yes' ? entry.reason.trim() : '' };
@@ -92,15 +92,19 @@ async function writeEntry(db, entry, expected, isNew) {
   const invalid = validateEntry(entry); if (invalid) throw new HttpError(400, invalid);
   const old = await find(db, entry.id);
   if (!isNew && !old) throw new HttpError(409, 'This entry was deleted on another device. Copy its details into a new entry.');
-  let path = entry.relocation === 'Yes' ? old?.photo_path || null : null;
+  const expansion = entry.additionalAP === undefined ? old?.additional_ap_required ?? null : entry.additionalAP === '' ? null : entry.additionalAP === 'Yes';
+  let path = old?.photo_path || null;
   let image;
-  if (entry.relocation === 'Yes' && entry.photo) {
+  if (entry.photo) {
     image = photoBytes(entry.photo);
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', image.bytes)), b => b.toString(16).padStart(2, '0')).join('');
     path = `${entry.id}/${hash}.${image.extension}`;
   }
-  if (entry.relocation === 'Yes' && !path) throw new HttpError(400, 'Attach a wide-angle relocation photo.');
+  if ((entry.relocation === 'Yes' || expansion === true) && !path) throw new HttpError(400, 'Attach one wide-angle room photo for relocation or expansion.');
   const row = { ...toRow(entry), photo_path: path, new_cabling: entry.relocation === 'Yes' ? (entry.newCabling ?? old?.new_cabling ?? 'Not assessed') : null };
+  row.additional_ap_required = expansion;
+  row.expansion_cabling = expansion===true?(entry.expansionCabling ?? old?.expansion_cabling ?? 'Not assessed'):null;
+  row.remarks = entry.remarks ?? old?.remarks ?? '';
   const matchesOld = old && Object.keys(row).every(key => row[key] === old[key]);
   // A lost response can be retried safely using the same UUID and contents.
   if (matchesOld) return fromRow(old);
@@ -184,7 +188,7 @@ export async function handle(request, env, suppliedDb) {
       const { data, error } = await db.storage.from(BUCKET).download(row.photo_path);
       if (error) throw new HttpError(503, 'Photo could not be downloaded. Try again.');
       const extension = row.photo_path.split('.').pop();
-      const name = `${row.building}-${row.floor}-${row.room}-relocation`.replace(/[^a-z0-9_-]/gi, '-').slice(0,120);
+      const name = `${row.building}-${row.floor}-${row.room}-survey`.replace(/[^a-z0-9_-]/gi, '-').slice(0,120);
       return new Response(data, { headers: { ...headers, 'Content-Type': data.type || 'image/jpeg', 'Content-Disposition': `${url.searchParams.has('download') ? 'attachment' : 'inline'}; filename="${name}.${extension}"` } });
     }
     throw new HttpError(404, 'Unknown survey endpoint.');

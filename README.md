@@ -19,7 +19,8 @@ The app supports:
 - Building, floor, room and category details.
 - Existing AP model, hostname, serial number and MAC address.
 - LAN or server room selection and network ownership.
-- Relocation reasons, new cabling requirements and supporting photos.
+- Combined tech refresh and AP expansion in one room entry, with a shared photo.
+- Separate relocation and expansion cabling answers, review totals and optional remarks.
 - Category and LAN room filters, record editing and photo downloads.
 - CSV export, JSON backups and browser print-to-PDF.
 - Local offline drafts with automatic syncing when connectivity returns.

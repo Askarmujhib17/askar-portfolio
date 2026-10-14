@@ -1,10 +1,11 @@
-import { categories, lanRooms, fields, validateEntry } from './schema.js';
+import { categories, lanRooms, fields, validateEntry, normalizeExpansion, surveyTotals } from './schema.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const API = '/api/ap-survey';
 let records = [], queue = [], db, editing = null, editVersion = null, currentPhoto = '', existingPhoto = false;
 let unlocked = false, syncing = false, readingPhoto = false, saving = false, revision = 0;
 let photoUrl = '';
+let expansionTouched = false;
 let lastSave = null, syncRequested = false;
 class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
 function notify(message) { $('notice').textContent = message; $('notice').classList.remove('hidden'); }
@@ -49,7 +50,7 @@ async function openDb() {
     const request = db.transaction('workspace','readonly').objectStore('workspace').get('state');
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
   });
-  records = (saved?.records || []).map(r => ({...r,newCabling:r.newCabling ?? (r.relocation==='Yes'?'Not assessed':'')})); queue = (saved?.queue || []).map(q => q.entry ? {...q,entry:{...q.entry,newCabling:q.entry.newCabling ?? (q.entry.relocation==='Yes'?'Not assessed':'')}} : q); render();
+  records = (saved?.records || []).map(normalizeExpansion).map(r => ({...r,newCabling:r.newCabling ?? (r.relocation==='Yes'?'Not assessed':'')})); queue = (saved?.queue || []).map(q => q.entry ? {...q,entry:{...normalizeExpansion(q.entry),newCabling:q.entry.newCabling ?? (q.entry.relocation==='Yes'?'Not assessed':'')}} : q); render();
 }
 function saveState(nextRecords = records, nextQueue = queue) {
   return new Promise((resolve, reject) => {
@@ -66,7 +67,8 @@ function mutate(callback) {
 }
 function relocationUI() {
   const yes = $('relocation').value === 'Yes'; $('relocationDetails').classList.toggle('hidden', !yes);
-  $('reason').required = yes; $('newCabling').required = yes; $('photo').required = yes && !currentPhoto && !existingPhoto;
+  $('reason').required = yes; $('newCabling').required = yes; $('expansionDetails').classList.toggle('hidden',$('additionalAP').value!=='Yes'); $('expansionCabling').required=$('additionalAP').value==='Yes'; $('photo').required = (yes || $('additionalAP').value==='Yes') && !currentPhoto && !existingPhoto;
+  document.querySelector('label[for="photo"]').textContent=(yes||$('additionalAP').value==='Yes')?'Shared room photo *':'Shared room photo (optional)';
 }
 function previewPhoto() {
   if (photoUrl) { URL.revokeObjectURL(photoUrl); photoUrl = ''; }
@@ -76,21 +78,24 @@ function previewPhoto() {
   relocationUI();
 }
 function resetForm() {
-  editing = null; editVersion = null; currentPhoto = ''; existingPhoto = false; $('form').reset(); previewPhoto();
+  expansionTouched=false; editing = null; editVersion = null; currentPhoto = ''; existingPhoto = false; $('form').reset(); previewPhoto();
   $('formTitle').textContent = 'New survey entry'; $('save').textContent = 'Save & next location →'; $('cancel').classList.add('hidden');
 }
 function showList() { $('entry').classList.add('hidden'); $('list').classList.remove('hidden'); render(); window.scrollTo(0,0); }
 function showForm() { $('entry').classList.remove('hidden'); $('list').classList.add('hidden'); window.scrollTo(0,0); }
 function filteredRecords() {
   const search = $('search').value.toLowerCase();
-  return records.filter(r => fields.some(f => String(r[f] || '').toLowerCase().includes(search)) && ($('categoryFilter').value === 'all' || r.category === $('categoryFilter').value) && ($('lanFilter').value === 'all' || (r.lanRoom || '') === $('lanFilter').value));
+  return records.filter(r => fields.some(f => String(r[f] || '').toLowerCase().includes(search)) && ($('categoryFilter').value === 'all' || r.category === $('categoryFilter').value) && ($('lanFilter').value === 'all' || (r.lanRoom || '') === $('lanFilter').value) && ($('expansionFilter').value==='all'||(r.additionalAP||'')===$('expansionFilter').value));
 }
 function render() {
   $('total').textContent = records.length; $('count').textContent = records.length;
   const filtered = filteredRecords(); $('listCount').textContent = `Showing ${filtered.length} of ${records.length} total entries`;
   $('empty').classList.toggle('hidden', !!filtered.length); $('table').classList.toggle('hidden', !filtered.length);
   $('empty').querySelector('h2').textContent = records.length ? 'No matching entries' : 'No entries yet';
-  $('rows').innerHTML = filtered.map(r => `<tr>${fields.slice(0,10).map(f => `<td>${esc(r[f] || '—')}</td>`).join('')}<td>${esc(r.relocation || 'Not recorded')}</td><td style="white-space:normal;min-width:160px">${esc(r.reason || '—')}</td><td>${esc(r.relocation === 'Yes' ? (r.newCabling || 'Not assessed') : '—')}</td><td>${r.photo || r.hasPhoto ? `<button data-photo="${esc(r.id)}">View photo</button> <button data-download="${esc(r.id)}">Download photo</button>` : '—'}</td><td><span class="draft ${r.model && r.hostname && r.serial && r.mac ? 'complete' : ''}">${r.model && r.hostname && r.serial && r.mac ? 'Complete' : 'Add later'}</span><div class="sub">${queue.some(q => q.id === r.id) ? 'Saved on device · not yet synced' : 'Synced ✓'}</div></td><td><button data-edit="${esc(r.id)}">Edit</button> <button class="danger" data-delete="${esc(r.id)}">Delete</button></td></tr>`).join('');
+  const current=surveyTotals(filtered),all=surveyTotals(records);
+  const metrics=[['Rooms surveyed','rooms'],['Additional APs','additionalAPs'],['Relocation cable runs','relocationCables'],['Additional AP cable runs','expansionCables'],['Total new cable runs','totalCables'],['Cabling not assessed','pendingCabling'],['Expansion not recorded','expansionUnrecorded']];
+  $('cablingSummary').innerHTML='<h2 class="section">Survey totals</h2><table class="summary"><thead><tr><th>Count</th><th>Filtered list</th><th>Full register</th></tr></thead><tbody>'+metrics.map(([label,key])=>`<tr><td>${label}</td><td>${current[key]}</td><td>${all[key]}</td></tr>`).join('')+'</tbody></table><p class="hint">Each Yes counts as one cable run. Both jobs can count separately in the same room. Totals include unsynced entries; not-recorded expansion needs review.</p>';
+  $('rows').innerHTML = filtered.map(r => `<tr>${fields.slice(0,10).map(f => `<td>${esc(r[f] || '—')}</td>`).join('')}<td>${esc(r.relocation || 'Not recorded')}</td><td style="white-space:normal;min-width:160px">${esc(r.reason || '—')}</td><td>${esc(r.relocation === 'Yes' ? (r.newCabling || 'Not assessed') : '—')}</td><td>${esc(r.additionalAP||'Not recorded')}</td><td>${esc(r.additionalAP==='Yes'?(r.expansionCabling||'Not assessed'):'—')}</td><td style="white-space:pre-wrap;min-width:180px">${esc(r.remarks||'—')}</td><td>${r.photo || r.hasPhoto ? `<button data-photo="${esc(r.id)}">View photo</button> <button data-download="${esc(r.id)}">Download photo</button>` : '—'}</td><td><span class="draft ${r.model && r.hostname && r.serial && r.mac ? 'complete' : ''}">${r.model && r.hostname && r.serial && r.mac ? 'Complete' : 'Add later'}</span><div class="sub">${queue.some(q => q.id === r.id) ? 'Saved on device · not yet synced' : 'Synced ✓'}</div></td><td><button data-edit="${esc(r.id)}">Edit</button> <button class="danger" data-delete="${esc(r.id)}">Delete</button></td></tr>`).join('');
   $('pendingPanel').classList.toggle('hidden', !queue.length);
   $('pendingRows').innerHTML = queue.map(q => `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e9e4"><strong>${esc(q.entry?.room || q.room || 'Deleted entry')}</strong> · ${q.operation === 'delete' ? 'Delete' : 'Save'}<p class="hint">${esc(q.error || 'Waiting to sync')}</p><button data-retry="${esc(q.id)}">Retry</button> <button data-discard="${esc(q.id)}">Discard unsynced change</button></div>`).join('');
   status();
@@ -167,6 +172,8 @@ $('logout').onclick = async () => {
   catch (error) { notify(error.message); }
 };
 $('relocation').onchange = relocationUI;
+$('additionalAP').onchange=()=>{expansionTouched=true;relocationUI();};
+$('category').onchange=()=>{if(!editing&&!expansionTouched){$('additionalAP').value=$('category').value==='Classrooms'?'Yes':'No';}relocationUI();};
 $('photo').onchange = async () => {
   const file = $('photo').files[0]; if (!file) return;
   readingPhoto = true; $('save').disabled = true; $('photoStatus').textContent = 'Preparing photo…';
@@ -186,10 +193,11 @@ $('form').onsubmit = async event => {
   event.preventDefault(); if (readingPhoto || saving || !$('form').reportValidity()) return;
   const old = records.find(r => r.id === editing);
   const entry = { ...Object.fromEntries(fields.map(f => [f,$(f).value.trim()])), id:editing || crypto.randomUUID(), updatedAt:editVersion, createdAt:old?.createdAt || new Date().toISOString(), hasPhoto:existingPhoto };
-  if (entry.relocation === 'Yes') { if (currentPhoto) entry.photo = currentPhoto; }
-  else { entry.reason = ''; entry.newCabling = ''; entry.hasPhoto = false; }
+  if(currentPhoto)entry.photo=currentPhoto;
+  if(entry.relocation!=='Yes'){entry.reason='';entry.newCabling='';}
+  if(entry.additionalAP!=='Yes')entry.expansionCabling='';
   const invalid = validateEntry(entry);
-  if (invalid || (entry.relocation === 'Yes' && !currentPhoto && !existingPhoto)) { notify(invalid || 'Attach a wide-angle relocation photo.'); return; }
+  if (invalid || ((entry.relocation === 'Yes'||entry.additionalAP==='Yes') && !currentPhoto && !existingPhoto)) { notify(invalid || 'Attach one wide-angle room photo.'); return; }
   saving = true; $('save').disabled = true;
   try { const wasEdit = !!editing; await enqueue(entry); lastSave = { id:entry.id, room:entry.room }; resetForm(); render(); $('notice').classList.add('hidden'); if (wasEdit) showList(); else $('building').focus(); void sync(); }
   catch (error) { notify(error.message); }
@@ -198,8 +206,8 @@ $('form').onsubmit = async event => {
 const captureBusy=()=>{if(readingPhoto||saving){notify('Wait for the photo or save to finish before changing pages.');return true;}return false;};
 $('view').onclick = () => {if(!captureBusy())showList();}; $('new').onclick = () => { if(captureBusy())return;resetForm(); showForm(); };
 $('cancel').onclick = () => { if(captureBusy())return;resetForm(); showList(); }; $('search').oninput = render;
-$('categoryFilter').onchange = render; $('lanFilter').onchange = render;
-$('clearFilters').onclick = () => { $('search').value=''; $('categoryFilter').value='all'; $('lanFilter').value='all'; render(); };
+$('categoryFilter').onchange = render; $('lanFilter').onchange = render; $('expansionFilter').onchange=render;
+$('clearFilters').onclick = () => { $('search').value=''; $('categoryFilter').value='all'; $('lanFilter').value='all'; $('expansionFilter').value='all'; render(); };
 $('refresh').onclick = () => { void sync(); };
 async function loadPhoto(record) {
   if (record.photo) return await (await fetch(record.photo)).blob();
@@ -210,14 +218,14 @@ async function loadPhoto(record) {
 function saveDownload(name, blob) {
   const anchor = document.createElement('a'); const url=URL.createObjectURL(blob); anchor.href=url; anchor.download=name; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url),10000);
 }
-function photoName(record,type) { return `${record.building}-${record.floor}-${record.room}-relocation`.replace(/[^a-z0-9_-]/gi,'-').slice(0,120)+'.'+(type==='image/png'?'png':type==='image/webp'?'webp':'jpg'); }
+function photoName(record,type) { return `${record.building}-${record.floor}-${record.room}-survey`.replace(/[^a-z0-9_-]/gi,'-').slice(0,120)+'.'+(type==='image/png'?'png':type==='image/webp'?'webp':'jpg'); }
 $('rows').onclick = async event => {
   const { edit, delete:remove, photo, download } = event.target.dataset;
   try {
     if (edit) {
       if (readingPhoto || saving) return;
       const record=records.find(r=>r.id===edit); resetForm(); editing=edit; editVersion=record.updatedAt||null;
-      fields.forEach(f=>$(f).value=record[f]||(f==='newCabling'?'Not assessed':'')); currentPhoto=record.photo||''; existingPhoto=!!record.hasPhoto; previewPhoto();
+      fields.forEach(f=>$(f).value=record[f]||(['newCabling','expansionCabling'].includes(f)?'Not assessed':'')); currentPhoto=record.photo||''; existingPhoto=!!record.hasPhoto; previewPhoto();
       $('formTitle').textContent='Edit survey entry'; $('save').textContent='Save changes'; $('cancel').classList.remove('hidden'); showForm();
     }
     if (photo || download) {
@@ -249,7 +257,7 @@ $('pendingRows').onclick=async event=>{
   }catch(error){notify(error.message);}
 };
 $('csv').onclick=()=>{
-  const headers=['Site/Building','Floor','Room / Location','Category','Network Type','Old AP Model','Old AP Hostname','Old AP Serial','Old AP MAC Address','LAN / Server Room','AP Relocation Required','Relocation Reason','New Cabling Required','Photo Attached','Sync Status'];
+  const headers=['Site/Building','Floor','Room / Location','Category','Network Type','Old AP Model','Old AP Hostname','Old AP Serial','Old AP MAC Address','LAN / Server Room','AP Relocation Required','Relocation Reason','New Cabling Required','Additional AP Required','Expansion Cabling Required','Remarks','Photo Attached','Sync Status'];
   const cell=value=>'"'+String(value??'').replace(/^(\s*)([=+@-])/,'$1\'$2').replace(/"/g,'""')+'"';
   const text='\ufeff'+[headers,...records.map(r=>[...fields.map(f=>r[f]),r.photo||r.hasPhoto?'Yes':'No',queue.some(q=>q.id===r.id)?'Pending':'Synced'])].map(row=>row.map(cell).join(',')).join('\r\n');saveDownload('ap-survey.csv',new Blob([text],{type:'text/csv;charset=utf-8'}));
 };
@@ -270,9 +278,9 @@ $('file').onchange=async()=>{
     const prepared=[];let skipped=0;
     for(const record of data.records){
       if(records.some(r=>r.id===record.id)){skipped++;continue;}
-      const entry={...Object.fromEntries(fields.map(f=>[f,record[f]||(f==='newCabling'&&record.relocation==='Yes'?'Not assessed':'')])),id:record.id,photo:record.photo||'',hasPhoto:false};
+      const entry={...Object.fromEntries(fields.map(f=>[f,record[f]||(f==='newCabling'&&record.relocation==='Yes'?'Not assessed':'')])),id:record.id,photo:record.photo||'',hasPhoto:false};entry.additionalAP=record.additionalAP??'';entry.expansionCabling=entry.additionalAP==='Yes'?(record.expansionCabling||'Not assessed'):'';
       const invalid=validateEntry(entry);if(invalid)throw new Error(`${record.room||'Entry'}: ${invalid} Complete missing fields in the original prototype before exporting.`);
-      if(entry.relocation==='Yes'&&!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(entry.photo))throw new Error(`${entry.room}: relocation photo is missing or invalid.`);
+      if((entry.relocation==='Yes'||entry.additionalAP==='Yes')&&!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(entry.photo))throw new Error(`${entry.room}: shared room photo is missing or invalid.`);
       if(entry.photo.length>7*1024*1024)throw new Error(`${entry.room}: photo is too large.`);
       prepared.push(entry);
     }
