@@ -98,3 +98,23 @@ full-stack locally, use `npx wrangler pages dev dist` with server variables in a
 ignored `.dev.vars` and a test Supabase project. Browser DOM/device testing and
 live Supabase verification are still needed after configuration; the automated
 tests use mocked storage and database responses.
+
+## October survey improvements
+
+Before deploying the cabling update, run
+`supabase/migrations/20261014_ap_survey_new_cabling.sql` in SQL Editor. It is
+safe to rerun and adds `new_cabling` with Yes / No / Not assessed choices.
+Existing records default to Not assessed. The API returns an empty cabling
+answer when relocation is No, and saves null for that case. Older drafts and
+backups are normalized; requests from older clients preserve a previously
+recorded cabling answer.
+
+Network type now accepts MOE-Owned, School-Owned and Unknown. MOE-Owned remains
+the form default. The featured AP Survey card links directly to `/ap-survey/`
+and is visible independently of the portfolio project-list database request.
+
+Save feedback distinguishes a durable local draft from server acknowledgement:
+Saved on device / Syncing / Synced ✓ / Sync failed. It appears on both entry and
+list views; saved rows also show their sync state. New entries still upload
+immediately, including entries captured while a previous sync is finishing.
+No batching, timestamp stamping, or school-specific PINs were added.

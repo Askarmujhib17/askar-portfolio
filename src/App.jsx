@@ -293,6 +293,17 @@ useEffect(() => {
     projects, and software development work.
   </p>
 
+  <article className="mt-10 max-w-xl rounded-xl border border-cyan-400/30 bg-[#111b2e] p-6">
+    <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400">Field tools</p>
+    <h3 className="mt-3 text-xl font-semibold">AP Survey</h3>
+    <p className="mt-3 text-sm leading-7 text-slate-400">
+      Capture AP details, document relocations and manage site survey reports across devices.
+    </p>
+    <a href="/ap-survey/" className="mt-6 inline-flex items-center gap-2 rounded-lg bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300">
+      Open app <ArrowRight size={18} />
+    </a>
+  </article>
+
   {loading ? (
     <p className="mt-10 text-slate-400">
       Loading projects...
@@ -303,7 +314,7 @@ useEffect(() => {
     </p>
   ) : projects.length === 0 ? (
     <p className="mt-10 text-slate-400">
-      No published projects yet.
+      More projects coming soon.
     </p>
   ) : (
     <div className="mt-10 grid gap-6 md:grid-cols-2">

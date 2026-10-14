@@ -4,7 +4,7 @@ import { handle, issueSession, authenticated, photoBytes } from '../server/ap-su
 import { validateEntry } from '../public/ap-survey/schema.js';
 const env={SUPABASE_URL:'https://example.supabase.co',SUPABASE_SECRET_KEY:'test-only',AP_SURVEY_PIN:'123456',AP_SURVEY_SESSION_SECRET:'test-session-secret-not-a-real-key-12345'};
 const id='ba8b95b5-8fb0-4484-a5a3-1d746881d33f';
-const entry={id,building:'Block E',floor:'1',room:'E1-3 CLASSROOM',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 1',relocation:'No',reason:''};
+const entry={id,building:'Block E',floor:'1',room:'E1-3 CLASSROOM',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 1',relocation:'No',reason:'',newCabling:''};
 function request(route,method='GET',body,cookie){return new Request(`https://example.com/api/ap-survey/${route}`,{method,headers:{...(method!=='GET'?{'Origin':'https://example.com','Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{})},body:body?JSON.stringify(body):undefined});}
 async function session(){return '__Host-ap-survey='+await issueSession(env);}
 function fakeDb(initial=[]){
@@ -39,10 +39,10 @@ test('mutations reject cross-origin requests and oversized bodies',async()=>{
  const huge=request('entries','POST',{entry},cookie);huge.headers.set('Content-Length','99999999');assert.equal((await handle(huge,env,fakeDb())).status,413);
 });
 test('required fields, exact categories, LAN choices and relocation reason validated',()=>{
- assert.equal(validateEntry(entry),'');assert.ok(validateEntry({...entry,lanRoom:''}));assert.ok(validateEntry({...entry,category:'Made up'}));assert.ok(validateEntry({...entry,room:' '}));assert.ok(validateEntry({...entry,relocation:'Yes',reason:' '}));assert.equal(validateEntry({...entry,mac:'aabb.ccdd.eeff'}),'');assert.ok(validateEntry({...entry,mac:'bad'}));
+ assert.equal(validateEntry(entry),'');assert.ok(validateEntry({...entry,lanRoom:''}));assert.ok(validateEntry({...entry,category:'Made up'}));assert.ok(validateEntry({...entry,room:' '}));assert.ok(validateEntry({...entry,relocation:'Yes',newCabling:'Not assessed',reason:' '}));assert.equal(validateEntry({...entry,mac:'aabb.ccdd.eeff'}),'');assert.ok(validateEntry({...entry,mac:'bad'}));
 });
 test('relocation requires photo, image format is checked',async()=>{
- const cookie=await session();const response=await handle(request('entries','POST',{entry:{...entry,relocation:'Yes',reason:'Too close to fan'}},cookie),env,fakeDb());assert.equal(response.status,400);
+ const cookie=await session();const response=await handle(request('entries','POST',{entry:{...entry,relocation:'Yes',newCabling:'Not assessed',reason:'Too close to fan'}},cookie),env,fakeDb());assert.equal(response.status,400);
  assert.throws(()=>photoBytes('data:image/jpeg;base64,YWJj'),/format/);
  assert.throws(()=>photoBytes('data:text/html;base64,YQ=='),/JPG/);
 });
@@ -55,8 +55,22 @@ test('create retries are idempotent; stale edits and deletes cannot overwrite',a
 });
 test('saved photos can be viewed/downloaded and retained on edit without reupload',async()=>{
  const cookie=await session(),db=fakeDb(),photo='data:image/jpeg;base64,/9j/AA==';
- let response=await handle(request('entries','POST',{entry:{...entry,relocation:'Yes',reason:'Too close to fan',photo}},cookie),env,db);assert.equal(response.status,201);const saved=(await response.json()).entry;assert.equal(saved.hasPhoto,true);assert.equal(db.uploads,1);
- response=await handle(request('entries/'+id,'PUT',{entry:{...entry,relocation:'Yes',reason:'Fan and mounting clearance'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);assert.equal(db.uploads,1);
+ let response=await handle(request('entries','POST',{entry:{...entry,relocation:'Yes',newCabling:'Not assessed',reason:'Too close to fan',photo}},cookie),env,db);assert.equal(response.status,201);const saved=(await response.json()).entry;assert.equal(saved.hasPhoto,true);assert.equal(db.uploads,1);
+ response=await handle(request('entries/'+id,'PUT',{entry:{...entry,relocation:'Yes',newCabling:'Not assessed',reason:'Fan and mounting clearance'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);assert.equal(db.uploads,1);
  response=await handle(request('photos/'+id+'?download'),env,db);assert.equal(response.status,401);
  response=await handle(request('photos/'+id+'?download','GET',null,cookie),env,db);assert.equal(response.status,200);assert.match(response.headers.get('Content-Disposition'),/attachment/);assert.equal(response.headers.get('Cache-Control'),'no-store');
+});
+test('all network options accepted and cabling persisted in relocation record',async()=>{
+ for(const network of ['MOE-Owned','School-Owned','Unknown'])assert.equal(validateEntry({...entry,network}),'');
+ assert.ok(validateEntry({...entry,network:'Other'}));
+ assert.ok(validateEntry({...entry,relocation:'Yes',newCabling:'Not assessed',reason:'Fan',newCabling:'Maybe'}));
+ const cookie=await session(),db=fakeDb();
+ let response=await handle(request('entries','POST',{entry:{...entry,network:'School-Owned',relocation:'Yes',newCabling:'Not assessed',reason:'Fan',newCabling:'Yes',photo:'data:image/jpeg;base64,/9j/AA=='}},cookie),env,db);
+ assert.equal(response.status,201);let saved=(await response.json()).entry;assert.equal(saved.newCabling,'Yes');assert.equal(db.rows[0].new_cabling,'Yes');assert.equal(saved.network,'School-Owned');
+ response=await handle(request('entries/'+id,'PUT',{entry:{...entry,network:'Unknown',relocation:'Yes',newCabling:'Not assessed',reason:'Fan',newCabling:'No'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);
+ assert.equal(response.status,200);saved=(await response.json()).entry;assert.equal(saved.newCabling,'No');
+ // An older app that does not send cabling must preserve the recorded answer.
+ const legacy={...entry,network:'Unknown',relocation:'Yes',newCabling:'Not assessed',reason:'Fan clearance'};delete legacy.newCabling;
+ response=await handle(request('entries/'+id,'PUT',{entry:legacy,expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);saved=(await response.json()).entry;assert.equal(saved.newCabling,'No');
+ response=await handle(request('entries/'+id,'PUT',{entry:{...entry,network:'Unknown'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);assert.equal(db.rows[0].new_cabling,null);assert.equal((await response.json()).entry.newCabling,'');
 });
