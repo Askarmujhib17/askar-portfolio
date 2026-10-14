@@ -5,6 +5,7 @@ const API = '/api/ap-survey';
 let records = [], queue = [], db, editing = null, editVersion = null, currentPhoto = '', existingPhoto = false;
 let unlocked = false, syncing = false, readingPhoto = false, saving = false, revision = 0;
 let photoUrl = '';
+let lastSave = null, syncRequested = false;
 class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
 function notify(message) { $('notice').textContent = message; $('notice').classList.remove('hidden'); }
 function lock(message = '') {
@@ -14,6 +15,11 @@ function openWorkspace() {
   unlocked = true; $('login').classList.add('hidden'); $('workspace').classList.remove('hidden'); $('logout').classList.remove('hidden'); status();
 }
 function status() {
+  if (lastSave) {
+    const pending = queue.find(q => q.id === lastSave.id);
+    const label = !pending ? `Synced ✓ ${lastSave.room} is saved in your database.` : (pending.error || pending.lastError) ? `Sync failed — ${lastSave.room} is saved on this device. ${pending.error || pending.lastError}` : !navigator.onLine ? `Saved on device — ${lastSave.room} will sync when you reconnect.` : syncing ? `Syncing ${lastSave.room} to your database…` : `Saved on device — ${lastSave.room} is waiting to sync.`;
+    $('saveStatus').textContent = label; $('saveStatus').classList.remove('hidden');
+  } else $('saveStatus').classList.add('hidden');
   $('syncStatus').textContent = !unlocked ? 'PIN protected' : syncing ? 'Syncing…' : queue.length ? `${queue.length} unsynced · ${navigator.onLine ? 'check drafts' : 'offline'}` : navigator.onLine ? 'All entries synced' : 'Offline · cached entries';
 }
 async function api(path, method = 'GET', body) {
@@ -43,7 +49,7 @@ async function openDb() {
     const request = db.transaction('workspace','readonly').objectStore('workspace').get('state');
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
   });
-  records = saved?.records || []; queue = saved?.queue || []; render();
+  records = (saved?.records || []).map(r => ({...r,newCabling:r.newCabling ?? (r.relocation==='Yes'?'Not assessed':'')})); queue = (saved?.queue || []).map(q => q.entry ? {...q,entry:{...q.entry,newCabling:q.entry.newCabling ?? (q.entry.relocation==='Yes'?'Not assessed':'')}} : q); render();
 }
 function saveState(nextRecords = records, nextQueue = queue) {
   return new Promise((resolve, reject) => {
@@ -60,7 +66,7 @@ function mutate(callback) {
 }
 function relocationUI() {
   const yes = $('relocation').value === 'Yes'; $('relocationDetails').classList.toggle('hidden', !yes);
-  $('reason').required = yes; $('photo').required = yes && !currentPhoto && !existingPhoto;
+  $('reason').required = yes; $('newCabling').required = yes; $('photo').required = yes && !currentPhoto && !existingPhoto;
 }
 function previewPhoto() {
   if (photoUrl) { URL.revokeObjectURL(photoUrl); photoUrl = ''; }
@@ -84,16 +90,17 @@ function render() {
   const filtered = filteredRecords(); $('listCount').textContent = `Showing ${filtered.length} of ${records.length} total entries`;
   $('empty').classList.toggle('hidden', !!filtered.length); $('table').classList.toggle('hidden', !filtered.length);
   $('empty').querySelector('h2').textContent = records.length ? 'No matching entries' : 'No entries yet';
-  $('rows').innerHTML = filtered.map(r => `<tr>${fields.slice(0,10).map(f => `<td>${esc(r[f] || '—')}</td>`).join('')}<td>${esc(r.relocation || 'Not recorded')}</td><td style="white-space:normal;min-width:160px">${esc(r.reason || '—')}</td><td>${r.photo || r.hasPhoto ? `<button data-photo="${esc(r.id)}">View photo</button> <button data-download="${esc(r.id)}">Download photo</button>` : '—'}</td><td><span class="draft ${r.model && r.hostname && r.serial && r.mac ? 'complete' : ''}">${r.model && r.hostname && r.serial && r.mac ? 'Complete' : 'Add later'}</span>${queue.some(q => q.id === r.id) ? '<div class="sub">Not yet synced</div>' : ''}</td><td><button data-edit="${esc(r.id)}">Edit</button> <button class="danger" data-delete="${esc(r.id)}">Delete</button></td></tr>`).join('');
+  $('rows').innerHTML = filtered.map(r => `<tr>${fields.slice(0,10).map(f => `<td>${esc(r[f] || '—')}</td>`).join('')}<td>${esc(r.relocation || 'Not recorded')}</td><td style="white-space:normal;min-width:160px">${esc(r.reason || '—')}</td><td>${esc(r.relocation === 'Yes' ? (r.newCabling || 'Not assessed') : '—')}</td><td>${r.photo || r.hasPhoto ? `<button data-photo="${esc(r.id)}">View photo</button> <button data-download="${esc(r.id)}">Download photo</button>` : '—'}</td><td><span class="draft ${r.model && r.hostname && r.serial && r.mac ? 'complete' : ''}">${r.model && r.hostname && r.serial && r.mac ? 'Complete' : 'Add later'}</span><div class="sub">${queue.some(q => q.id === r.id) ? 'Saved on device · not yet synced' : 'Synced ✓'}</div></td><td><button data-edit="${esc(r.id)}">Edit</button> <button class="danger" data-delete="${esc(r.id)}">Delete</button></td></tr>`).join('');
   $('pendingPanel').classList.toggle('hidden', !queue.length);
   $('pendingRows').innerHTML = queue.map(q => `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e9e4"><strong>${esc(q.entry?.room || q.room || 'Deleted entry')}</strong> · ${q.operation === 'delete' ? 'Delete' : 'Save'}<p class="hint">${esc(q.error || 'Waiting to sync')}</p><button data-retry="${esc(q.id)}">Retry</button> <button data-discard="${esc(q.id)}">Discard unsynced change</button></div>`).join('');
   status();
 }
 async function enqueue(entry) {
-  await mutate(async () => {
+  return await mutate(async () => {
     const previous = queue.find(q => q.id === entry.id);
     const task = { id: entry.id, operation: previous?.operation === 'create' || !editing ? 'create' : 'update', expectedUpdatedAt: previous?.expectedUpdatedAt || editVersion || records.find(r => r.id === entry.id)?.updatedAt, entry, token: crypto.randomUUID() };
     await saveState([...records.filter(r => r.id !== entry.id), entry], [...queue.filter(q => q.id !== entry.id), task]);
+    return task;
   });
 }
 async function fetchEntries() {
@@ -113,8 +120,9 @@ async function refresh() {
   render();
 }
 async function sync() {
-  if (syncing || !unlocked || !navigator.onLine) return;
-  syncing = true; status();
+  if (syncing) { syncRequested = true; return; }
+  if (!unlocked || !navigator.onLine) return;
+  syncRequested = false; syncing = true; status();
   try {
     for (const initial of [...queue]) {
       const task = queue.find(q => q.id === initial.id); if (!task || task.error) continue;
@@ -136,12 +144,16 @@ async function sync() {
       } catch (error) {
         if ([400,409,413,415].includes(error.status)) {
           await mutate(async () => saveState(records, queue.map(q => q.token === task.token ? { ...q, error:error.message } : q)));
-        } else { notify(error.message); break; }
+        } else {
+          if (lastSave?.id === task.id) $('saveStatus').textContent = `Sync failed — saved on device. ${error.message}`;
+          await mutate(async () => saveState(records, queue.map(q => q.token === task.token ? { ...q, lastError:error.message } : q)));
+          notify(error.message); break;
+        }
       }
     }
     if (unlocked) await refresh();
   } catch (error) { notify(error.message); }
-  finally { syncing = false; render(); }
+  finally { syncing = false; render(); if (syncRequested && unlocked && navigator.onLine) { syncRequested = false; void sync(); } }
 }
 $('loginForm').onsubmit = async event => {
   event.preventDefault(); $('unlock').disabled = true; $('loginError').textContent = '';
@@ -175,11 +187,11 @@ $('form').onsubmit = async event => {
   const old = records.find(r => r.id === editing);
   const entry = { ...Object.fromEntries(fields.map(f => [f,$(f).value.trim()])), id:editing || crypto.randomUUID(), updatedAt:editVersion, createdAt:old?.createdAt || new Date().toISOString(), hasPhoto:existingPhoto };
   if (entry.relocation === 'Yes') { if (currentPhoto) entry.photo = currentPhoto; }
-  else { entry.reason = ''; entry.hasPhoto = false; }
+  else { entry.reason = ''; entry.newCabling = ''; entry.hasPhoto = false; }
   const invalid = validateEntry(entry);
   if (invalid || (entry.relocation === 'Yes' && !currentPhoto && !existingPhoto)) { notify(invalid || 'Attach a wide-angle relocation photo.'); return; }
   saving = true; $('save').disabled = true;
-  try { const wasEdit = !!editing; await enqueue(entry); resetForm(); render(); notify(`Saved ${entry.room} on this device. ${navigator.onLine ? 'Syncing to your database…' : 'Will sync when you reconnect.'}`); if (wasEdit) showList(); else $('building').focus(); void sync(); }
+  try { const wasEdit = !!editing; await enqueue(entry); lastSave = { id:entry.id, room:entry.room }; resetForm(); render(); $('notice').classList.add('hidden'); if (wasEdit) showList(); else $('building').focus(); void sync(); }
   catch (error) { notify(error.message); }
   finally { saving = false; $('save').disabled = readingPhoto; }
 };
@@ -205,7 +217,7 @@ $('rows').onclick = async event => {
     if (edit) {
       if (readingPhoto || saving) return;
       const record=records.find(r=>r.id===edit); resetForm(); editing=edit; editVersion=record.updatedAt||null;
-      fields.forEach(f=>$(f).value=record[f]||''); currentPhoto=record.photo||''; existingPhoto=!!record.hasPhoto; previewPhoto();
+      fields.forEach(f=>$(f).value=record[f]||(f==='newCabling'?'Not assessed':'')); currentPhoto=record.photo||''; existingPhoto=!!record.hasPhoto; previewPhoto();
       $('formTitle').textContent='Edit survey entry'; $('save').textContent='Save changes'; $('cancel').classList.remove('hidden'); showForm();
     }
     if (photo || download) {
@@ -217,7 +229,7 @@ $('rows').onclick = async event => {
     if(remove && confirm('Delete this entry from your shared register?')) {
       await mutate(async()=>{
         const record=records.find(r=>r.id===remove),previous=queue.find(q=>q.id===remove);
-        const nextQueue=queue.filter(q=>q.id!==remove);
+        const nextQueue=queue.filter(q=>q.id!==remove);if(lastSave?.id===remove)lastSave=null;
         if(previous?.operation!=='create') nextQueue.push({id:remove,room:record.room,operation:'delete',expectedUpdatedAt:previous?.expectedUpdatedAt||record.updatedAt,token:crypto.randomUUID()});
         await saveState(records.filter(r=>r.id!==remove),nextQueue);
       });render();void sync();
@@ -227,17 +239,17 @@ $('rows').onclick = async event => {
 $('pendingRows').onclick=async event=>{
   const {retry,discard}=event.target.dataset;
   try {
-    if(retry){await mutate(()=>saveState(records,queue.map(q=>q.id===retry?{...q,error:undefined}:q)));render();void sync();}
+    if(retry){await mutate(()=>saveState(records,queue.map(q=>q.id===retry?{...q,error:undefined,lastError:undefined}:q)));render();void sync();}
     if(discard&&confirm('Discard this unsynced change and reload the server version? Download a backup first if you need to keep it.')){
       if(syncing){notify('Wait for the current sync to finish before discarding a change.');return;}
       if(!navigator.onLine){notify('Reconnect before discarding a change so the server version can be restored.');return;}
       const remote=await fetchEntries();
-      await mutate(async()=>{const nextQueue=queue.filter(q=>q.id!==discard),ids=new Set(nextQueue.map(q=>q.id));await saveState([...remote.filter(r=>!ids.has(r.id)),...records.filter(r=>ids.has(r.id))],nextQueue);});render();
+      await mutate(async()=>{if(lastSave?.id===discard)lastSave=null;const nextQueue=queue.filter(q=>q.id!==discard),ids=new Set(nextQueue.map(q=>q.id));await saveState([...remote.filter(r=>!ids.has(r.id)),...records.filter(r=>ids.has(r.id))],nextQueue);});render();
     }
   }catch(error){notify(error.message);}
 };
 $('csv').onclick=()=>{
-  const headers=['Site/Building','Floor','Room / Location','Category','Network Type','Old AP Model','Old AP Hostname','Old AP Serial','Old AP MAC Address','LAN / Server Room','AP Relocation Required','Relocation Reason','Photo Attached','Sync Status'];
+  const headers=['Site/Building','Floor','Room / Location','Category','Network Type','Old AP Model','Old AP Hostname','Old AP Serial','Old AP MAC Address','LAN / Server Room','AP Relocation Required','Relocation Reason','New Cabling Required','Photo Attached','Sync Status'];
   const cell=value=>'"'+String(value??'').replace(/^(\s*)([=+@-])/,'$1\'$2').replace(/"/g,'""')+'"';
   const text='\ufeff'+[headers,...records.map(r=>[...fields.map(f=>r[f]),r.photo||r.hasPhoto?'Yes':'No',queue.some(q=>q.id===r.id)?'Pending':'Synced'])].map(row=>row.map(cell).join(',')).join('\r\n');saveDownload('ap-survey.csv',new Blob([text],{type:'text/csv;charset=utf-8'}));
 };
@@ -258,7 +270,7 @@ $('file').onchange=async()=>{
     const prepared=[];let skipped=0;
     for(const record of data.records){
       if(records.some(r=>r.id===record.id)){skipped++;continue;}
-      const entry={...Object.fromEntries(fields.map(f=>[f,record[f]||''])),id:record.id,photo:record.photo||'',hasPhoto:false};
+      const entry={...Object.fromEntries(fields.map(f=>[f,record[f]||(f==='newCabling'&&record.relocation==='Yes'?'Not assessed':'')])),id:record.id,photo:record.photo||'',hasPhoto:false};
       const invalid=validateEntry(entry);if(invalid)throw new Error(`${record.room||'Entry'}: ${invalid} Complete missing fields in the original prototype before exporting.`);
       if(entry.relocation==='Yes'&&!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(entry.photo))throw new Error(`${entry.room}: relocation photo is missing or invalid.`);
       if(entry.photo.length>7*1024*1024)throw new Error(`${entry.room}: photo is too large.`);

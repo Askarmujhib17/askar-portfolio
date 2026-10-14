@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 import { fields, categories, lanRooms, validateEntry } from '../public/ap-survey/schema.js';
 const script=fs.readFileSync(new URL('../public/ap-survey/app.js',import.meta.url),'utf8').replace(/^import[^\n]+\n/,'')+'\nglobalThis.testApi={enqueue,sync,refresh,saveState,mutate,resetForm,render,getRecords:()=>records,getQueue:()=>queue,setEditing:(id,version)=>{editing=id;editVersion=version},setPhoto:(photo)=>currentPhoto=photo};';
-const entry={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 2',relocation:'No',reason:''};
+const entry={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 2',relocation:'No',reason:'',newCabling:''};
 async function browser(){
  const nodes={};const node=id=>nodes[id]??={value:['categoryFilter','lanFilter'].includes(id)?'all':id==='network'?'MOE-Owned':'',textContent:'',dataset:{},disabled:false,classList:{add(){},remove(){},toggle(){}},append(){},focus(){},reportValidity(){return true},querySelector(){return node('emptyTitle')},reset(){for(const f of fields)node(f).value=f==='network'?'MOE-Owned':'';node('photo').value='';}};
  let stored,failStorage=false;
@@ -39,4 +39,15 @@ test('conflicts keep local draft and mark it for review instead of dropping data
 });
 test('editing an offline creation retains create operation and photograph',async()=>{
  const b=await browser();b.context.navigator.onLine=false;const photo='data:image/jpeg;base64,/9j/AA==';await b.api.enqueue({...entry,relocation:'Yes',reason:'Near fan',photo});b.api.setEditing(entry.id,null);await b.api.enqueue({...entry,relocation:'Yes',reason:'Fan clearance',photo});assert.equal(b.api.getQueue().length,1);assert.equal(b.api.getQueue()[0].operation,'create');assert.equal(b.api.getQueue()[0].entry.photo,photo);
+});
+test('online submission changes status to Synced only after server acknowledgement',async()=>{
+ const b=await browser();for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});
+ await new Promise(resolve=>setTimeout(resolve,20));assert.equal(b.api.getQueue().length,0);assert.match(b.node('saveStatus').textContent,/Synced ✓ E1-3/);assert.match(b.node('rows').innerHTML,/Synced ✓/);
+});
+test('failed server submission shows failed status and keeps the draft',async()=>{
+ const b=await browser();b.state.failApi=503;for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});
+ await new Promise(resolve=>setTimeout(resolve,20));assert.equal(b.api.getQueue().length,1);assert.match(b.node('saveStatus').textContent,/Sync failed/);assert.doesNotMatch(b.node('saveStatus').textContent,/Synced ✓/);
+});
+test('offline submission status says saved on device, never synced',async()=>{
+ const b=await browser();b.context.navigator.onLine=false;for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});assert.match(b.node('saveStatus').textContent,/Saved on device/);assert.doesNotMatch(b.node('saveStatus').textContent,/Synced ✓/);
 });
