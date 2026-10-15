@@ -1,11 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
-import { UUID, validateEntry } from '../public/ap-survey/schema.js';
+import { UUID, validateEntry, validateLocation, normalizeLocation, withJobSummary } from '../public/ap-survey/schema.js';
 
 const BUCKET = 'ap-survey-photos';
 const COOKIE = '__Host-ap-survey';
 const SESSION_SECONDS = 60 * 60 * 24 * 7;
-const MAX_BODY = 8 * 1024 * 1024;
+const MAX_BODY = 18 * 1024 * 1024;
 const encoder = new TextEncoder();
+const canonical=value=>JSON.stringify(value,(_key,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -63,11 +64,14 @@ export async function readBody(request, max = MAX_BODY) {
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON.'); }
 }
 function dbError(error) {
-  if (error && /new_cabling|additional_ap_required|expansion_cabling|remarks/.test(error.message || '')) throw new HttpError(503, 'Database upgrade needed: run the latest survey SQL migration in Supabase. Your draft remains on this device.');
+  if (error && /new_cabling|additional_ap_required|expansion_cabling|remarks|ap_jobs|photo_paths|ap_survey_inventory/.test(error.message || '')) throw new HttpError(503, 'Database upgrade needed: run the latest survey SQL migration in Supabase. Your draft remains on this device.');
   if (error) throw new HttpError(503, 'Database request failed. Check the Supabase table and server settings; your form has not been cleared.');
 }
 export function fromRow(row) {
-  return { id: row.id, building: row.building, floor: row.floor, room: row.room, category: row.category, network: row.network_type, model: row.old_ap_model, hostname: row.old_ap_hostname, serial: row.old_ap_serial, mac: row.old_ap_mac, lanRoom: row.lan_room, relocation: row.relocation_required ? 'Yes' : 'No', reason: row.relocation_reason, newCabling: row.relocation_required ? (row.new_cabling || 'Not assessed') : '', additionalAP:row.additional_ap_required===true?'Yes':row.additional_ap_required===false?'No':'', expansionCabling:row.additional_ap_required===true?(row.expansion_cabling||'Not assessed'):'', remarks:row.remarks||'', hasPhoto: !!row.photo_path, updatedAt: row.updated_at, createdAt: row.created_at };
+  const record = { id: row.id, building: row.building, floor: row.floor, room: row.room, category: row.category, network: row.network_type, model: row.old_ap_model, hostname: row.old_ap_hostname, serial: row.old_ap_serial, mac: row.old_ap_mac, lanRoom: row.lan_room, relocation: row.relocation_required ? 'Yes' : 'No', reason: row.relocation_reason, newCabling: row.relocation_required ? (row.new_cabling || 'Not assessed') : '', additionalAP:row.additional_ap_required===true?'Yes':row.additional_ap_required===false?'No':'', expansionCabling:row.additional_ap_required===true?(row.expansion_cabling||'Not assessed'):'', remarks:row.remarks||'', hasPhoto: !!row.photo_path, updatedAt: row.updated_at, createdAt: row.created_at };
+  const result=normalizeLocation({...record,jobs:Array.isArray(row.ap_jobs)?row.ap_jobs:undefined,expansionUnrecorded:Array.isArray(row.ap_jobs)?!!row.expansion_unrecorded:!record.additionalAP});
+  const paths=row.photo_paths??(row.photo_path?[row.photo_path]:[]);
+  return {...result,photo:undefined,photos:paths.map((_,remoteIndex)=>({remoteIndex})),photoCount:paths.length,hasPhoto:!!paths.length};
 }
 function toRow(entry) {
   return { id: entry.id, building: entry.building.trim(), floor: entry.floor.trim(), room: entry.room.trim(), category: entry.category, network_type: entry.network, old_ap_model: entry.model.trim(), old_ap_hostname: entry.hostname.trim(), old_ap_serial: entry.serial.trim(), old_ap_mac: entry.mac.trim(), lan_room: entry.lanRoom, relocation_required: entry.relocation === 'Yes', relocation_reason: entry.relocation === 'Yes' ? entry.reason.trim() : '' };
@@ -89,29 +93,43 @@ export function photoBytes(value) {
   return { bytes, type: `image/${match[1]}`, extension: match[1] === 'jpeg' ? 'jpg' : match[1] };
 }
 async function writeEntry(db, entry, expected, isNew) {
-  const invalid = validateEntry(entry); if (invalid) throw new HttpError(400, invalid);
+  const multi=Array.isArray(entry?.jobs);
+  if(multi)entry=withJobSummary(entry);
+  const invalid = multi?validateLocation(entry):validateEntry(entry); if (invalid) throw new HttpError(400, invalid);
   const old = await find(db, entry.id);
   if (!isNew && !old) throw new HttpError(409, 'This entry was deleted on another device. Copy its details into a new entry.');
+  if(!multi&&Array.isArray(old?.ap_jobs))throw new HttpError(409,'This location uses the new multi-AP form. Reload the app before editing.');
   const expansion = entry.additionalAP === undefined ? old?.additional_ap_required ?? null : entry.additionalAP === '' ? null : entry.additionalAP === 'Yes';
-  let path = old?.photo_path || null;
-  let image;
-  if (entry.photo) {
-    image = photoBytes(entry.photo);
-    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', image.bytes)), b => b.toString(16).padStart(2, '0')).join('');
-    path = `${entry.id}/${hash}.${image.extension}`;
+  const oldPaths=old?.photo_paths??(old?.photo_path?[old.photo_path]:[]);
+  const photoInputs=entry.photos===undefined?(entry.photo?[{data:entry.photo}]:oldPaths.map((_,remoteIndex)=>({remoteIndex}))):entry.photos;
+  if(!Array.isArray(photoInputs)||photoInputs.length>6||(multi&&entry.category==='Classrooms'&&photoInputs.length>1))throw new HttpError(400,'Use one classroom photo, or up to six photos for other locations.');
+  const paths=[],images=[];let totalBytes=0;
+  for(const photo of photoInputs){
+    if(photo&&typeof photo.data==='string'){
+      const image=photoBytes(photo.data);totalBytes+=image.bytes.length;
+      if(totalBytes>10*1024*1024)throw new HttpError(413,'Combined new photos must be under 10 MB.');
+      const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',image.bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+      const path=`${entry.id}/${hash}.${image.extension}`;paths.push(path);images.push({...image,path});
+    }else if(photo&&Number.isInteger(photo.remoteIndex)&&oldPaths[photo.remoteIndex])paths.push(oldPaths[photo.remoteIndex]);
+    else throw new HttpError(400,'Photo reference is invalid. Refresh this location.');
   }
-  if ((entry.relocation === 'Yes' || expansion === true) && !path) throw new HttpError(400, 'Attach one wide-angle room photo for relocation or expansion.');
+  const needsPhoto=multi?entry.jobs.some(j=>j.type==='Expansion'||j.relocation==='Yes'):(entry.relocation==='Yes'||expansion===true);
+  if(needsPhoto&&!paths.length)throw new HttpError(400,'Attach a wide-angle photo for relocation or expansion.');
+  const path=paths[0]||null;
   const row = { ...toRow(entry), photo_path: path, new_cabling: entry.relocation === 'Yes' ? (entry.newCabling ?? old?.new_cabling ?? 'Not assessed') : null };
   row.additional_ap_required = expansion;
   row.expansion_cabling = expansion===true?(entry.expansionCabling ?? old?.expansion_cabling ?? 'Not assessed'):null;
   row.remarks = entry.remarks ?? old?.remarks ?? '';
-  const matchesOld = old && Object.keys(row).every(key => row[key] === old[key]);
+  if(multi){row.ap_jobs=entry.jobs.map(job=>Object.fromEntries(['id','type','model','hostname','serial','mac','relocation','reason','cabling','equipment','bracket','notes'].map(key=>[key,job[key]])));row.expansion_unrecorded=!!entry.expansionUnrecorded;}
+  row.photo_paths=paths;
+  const sameRow=existing=>existing&&Object.keys(row).every(key=>canonical(row[key])===canonical(existing[key]));
+  const matchesOld=sameRow(old);
   // A lost response can be retried safely using the same UUID and contents.
   if (matchesOld) return fromRow(old);
   if (isNew && old) throw new HttpError(409, 'This entry ID already exists with different details.');
   if (!isNew && (!expected || expected !== old.updated_at)) throw new HttpError(409, 'This entry changed on another device. Refresh entries before editing it again.');
-  if (image) {
-    const { error } = await db.storage.from(BUCKET).upload(path, image.bytes, { contentType: image.type, upsert: false });
+  for (const image of images) {
+    const { error } = await db.storage.from(BUCKET).upload(image.path, image.bytes, { contentType: image.type, upsert: false });
     // Deterministic names make upload retries safe. All other failures stop the save.
     if (error && String(error.statusCode) !== '409' && error.message !== 'The resource already exists') throw new HttpError(503, 'Photo upload failed. Your entry is still available locally.');
   }
@@ -120,7 +138,7 @@ async function writeEntry(db, entry, expected, isNew) {
   const { data, error } = await query.select('*').maybeSingle();
   if (error?.code === '23505') {
     const concurrent = await find(db, entry.id);
-    if (concurrent && Object.keys(row).every(key => row[key] === concurrent[key])) return fromRow(concurrent);
+    if (sameRow(concurrent)) return fromRow(concurrent);
     throw new HttpError(409, 'This entry was saved elsewhere with different details.');
   }
   dbError(error);
@@ -152,6 +170,23 @@ export async function handle(request, env, suppliedDb) {
     if (!await authenticated(request, env)) throw new HttpError(401, 'Enter your PIN to continue.');
     if (route === 'session' && request.method === 'GET') return json({ ok: true });
     if (route === 'logout' && request.method === 'POST') return json({ ok: true }, 200, { 'Set-Cookie': cookie('', 0) });
+    if(route==='inventory'&&request.method==='GET'){
+      const offset=Number(url.searchParams.get('offset')||0);if(!Number.isInteger(offset)||offset<0)throw new HttpError(400,'Invalid page.');
+      const {data,error}=await db.from('ap_survey_inventory').select('*').order('hostname_key').range(offset,offset+499);dbError(error);
+      return json({items:data,nextOffset:data.length===500?offset+500:null});
+    }
+    if(route==='inventory'&&request.method==='POST'){
+      const {items}=await readBody(request,2*1024*1024);
+      if(!Array.isArray(items)||!items.length||items.length>2000)throw new HttpError(400,'Import 1–2,000 AP inventory rows.');
+      const rows=items.map(r=>{
+        for(const [key,max] of Object.entries({hostname:150,model:150,serial:100,mac:30}))if(typeof r?.[key]!=='string'||r[key].length>max)throw new HttpError(400,'Invalid inventory field.');
+        if(!r.hostname.trim())throw new HttpError(400,'Hostname is required.');
+        if(r.mac&&!/^[a-f\d]{12}$/i.test(r.mac.replace(/[:.\-]/g,'')))throw new HttpError(400,'Invalid inventory MAC address.');
+        return {...r,hostname:r.hostname.trim(),hostname_key:r.hostname.trim().toLowerCase()};
+      }).map(({hostname_key,hostname,model,serial,mac})=>({hostname_key,hostname,model,serial,mac}));
+      if(new Set(rows.map(r=>r.hostname_key)).size!==rows.length)throw new HttpError(400,'Duplicate inventory hostnames.');
+      const {error}=await db.from('ap_survey_inventory').upsert(rows,{onConflict:'hostname_key'});dbError(error);return json({count:rows.length});
+    }
     if (route === 'entries' && request.method === 'GET') {
       const offset = Number(url.searchParams.get('offset') || 0);
       if (!Number.isInteger(offset) || offset < 0) throw new HttpError(400, 'Invalid page.');
@@ -184,11 +219,13 @@ export async function handle(request, env, suppliedDb) {
     const photoRoute = route.match(/^photos\/([a-f0-9-]+)$/i);
     if (photoRoute && UUID.test(photoRoute[1]) && request.method === 'GET') {
       const row = await find(db, photoRoute[1]);
-      if (!row?.photo_path) throw new HttpError(404, 'Photo not found.');
-      const { data, error } = await db.storage.from(BUCKET).download(row.photo_path);
+      const paths=row?.photo_paths??(row?.photo_path?[row.photo_path]:[]);
+      const index=Number(url.searchParams.get('photo')||0);
+      if(!Number.isInteger(index)||index<0||!paths[index]) throw new HttpError(404, 'Photo not found.');
+      const { data, error } = await db.storage.from(BUCKET).download(paths[index]);
       if (error) throw new HttpError(503, 'Photo could not be downloaded. Try again.');
-      const extension = row.photo_path.split('.').pop();
-      const name = `${row.building}-${row.floor}-${row.room}-survey`.replace(/[^a-z0-9_-]/gi, '-').slice(0,120);
+      const extension = paths[index].split('.').pop();
+      const name = `${row.building}-${row.floor}-${row.room}-survey-${index+1}`.replace(/[^a-z0-9_-]/gi, '-').slice(0,120);
       return new Response(data, { headers: { ...headers, 'Content-Type': data.type || 'image/jpeg', 'Content-Disposition': `${url.searchParams.has('download') ? 'attachment' : 'inline'}; filename="${name}.${extension}"` } });
     }
     throw new HttpError(404, 'Unknown survey endpoint.');
