@@ -7,6 +7,12 @@ let unlocked = false, syncing = false, readingPhoto = false, saving = false, rev
 let photoUrl = '';
 let jobs=[],draftPhotos=[],inventory=[],expansionUnrecorded=false,formDirty=false,replacePhotoIndex=null;
 let jobChoiceTouched=false;
+let storageReady;
+$('unlock').disabled=true;
+function ensureStorage(){
+  if(!storageReady)storageReady=openDb().catch(error=>{throw new Error('Device storage is not ready. Close other AP Survey tabs and reopen this page. Your saved data has not been cleared.');});
+  return storageReady;
+}
 let expansionTouched = false;
 let lastSave = null, syncRequested = false;
 class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
@@ -47,20 +53,22 @@ async function openDb() {
     const request = indexedDB.open('askar-ap-survey-cloud-v1', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('workspace');
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    request.onblocked = () => { $('loginError').textContent='Device storage is waiting for another AP Survey tab. Close other tabs for this app.'; };
   });
   const saved = await new Promise((resolve, reject) => {
     const request = db.transaction('workspace','readonly').objectStore('workspace').get('state');
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    request.onblocked = () => { $('loginError').textContent='Device storage is waiting for another AP Survey tab. Close other tabs for this app.'; };
   });
   records=(saved?.records||[]).map(normalizeLocation);queue=(saved?.queue||[]).map(q=>q.entry?{...q,entry:withJobSummary(normalizeLocation(q.entry))}:q);inventory=saved?.inventory||[];renderInventory();render();
 }
 function saveState(nextRecords = records, nextQueue = queue) {
-  return new Promise((resolve, reject) => {
+  return ensureStorage().then(()=>new Promise((resolve, reject) => {
     const transaction = db.transaction('workspace','readwrite');
     transaction.objectStore('workspace').put({ records: nextRecords, queue: nextQueue, inventory }, 'state');
     transaction.oncomplete = () => { records = nextRecords; queue = nextQueue; revision++; resolve(); };
     transaction.onerror = transaction.onabort = () => reject(new Error('Could not save on this device. Your form is still here. Check browser/device storage.'));
-  });
+  }));
 }
 // Serialize cache changes so sync responses cannot overwrite a newly captured draft.
 let changes = Promise.resolve();
@@ -178,7 +186,7 @@ function renderInventory(){
  const q=$('inventorySearch').value.toLowerCase();const subset=inventory.filter(r=>Object.values(r).join(' ').toLowerCase().includes(q));$('inventoryStatus').textContent=`${inventory.length} APs available for hostname lookup.`;
  $('inventoryTable').innerHTML='<table><thead><tr><th>Hostname</th><th>Model</th><th>Serial</th><th>MAC</th></tr></thead><tbody>'+subset.map(r=>`<tr>${['hostname','model','serial','mac'].map(f=>`<td>${esc(r[f]||'—')}</td>`).join('')}</tr>`).join('')+'</tbody></table>';
 }
-$('loginForm').onsubmit=async e=>{e.preventDefault();$('unlock').disabled=true;try{await api('login','POST',{pin:$('pin').value});$('pin').value='';localStorage.setItem('ap-survey-used','yes');openWorkspace();await sync();try{await loadInventory();}catch(err){notify(err.message);}}catch(err){$('loginError').textContent=err.message;}finally{$('unlock').disabled=false;}};
+$('loginForm').onsubmit=async e=>{e.preventDefault();$('unlock').disabled=true;try{await ensureStorage();await api('login','POST',{pin:$('pin').value});$('pin').value='';localStorage.setItem('ap-survey-used','yes');openWorkspace();await sync();try{await loadInventory();}catch(err){notify(err.message);}}catch(err){$('loginError').textContent=err.message;}finally{$('unlock').disabled=false;}};
 $('logout').onclick=async()=>{if((queue.length||formDirty)&&!confirm('Saved drafts remain on this device; unsaved form changes are not uploaded. Lock app?'))return;try{await api('logout','POST',{});localStorage.removeItem('ap-survey-used');lock();}catch(err){notify(err.message);}};
 function busy(){if(readingPhoto||saving){notify('Wait for the current photo or save to finish.');return true;}return false;}
 function leaveForm(){return !formDirty||confirm('Leave unsaved form changes? Saved/offline locations are retained.');}
@@ -295,7 +303,7 @@ $('print').onclick=()=>{document.querySelectorAll('#rows details').forEach(d=>d.
 window.addEventListener('online',()=>{if(unlocked)void sync();});window.addEventListener('offline',status);
 window.addEventListener('beforeunload',e=>{if(saving||readingPhoto||formDirty){e.preventDefault();e.returnValue='';}});
 setInterval(()=>{if(unlocked&&navigator.onLine&&!syncing&&!saving)void sync();},30000);
-async function start(){try{await openDb();resetForm();await api('session');openWorkspace();await sync();try{await loadInventory();}catch(err){notify(err.message);}}catch(err){if(err.status===0&&localStorage.getItem('ap-survey-used')==='yes'){openWorkspace();notify('Offline: cached locations and inventory are available. Drafts sync on reconnection.');}else lock(err.status===401?'':err.message);}}
+async function start(){try{await ensureStorage();$('unlock').disabled=false;resetForm();await api('session');openWorkspace();await sync();try{await loadInventory();}catch(err){notify(err.message);}}catch(err){if(err.status===0&&localStorage.getItem('ap-survey-used')==='yes'){openWorkspace();notify('Offline: cached locations and inventory are available. Drafts sync on reconnection.');}else lock(err.status===401?'':err.message);}}
 void start();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/ap-survey/sw.js',{scope:'/ap-survey/'}).catch(()=>notify('Offline page caching unavailable. Keep this tab open without reception.'));
 

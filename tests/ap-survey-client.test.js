@@ -6,16 +6,16 @@ import * as schema from '../public/ap-survey/schema.js';
 const script=fs.readFileSync(new URL('../public/ap-survey/app.js',import.meta.url),'utf8').replace(/^import[^\n]+\n/,'')+'\nglobalThis.testApi={enqueue,sync,refresh,saveState,mutate,resetForm,render,addJob,submitLocation,renderPhotos,getRecords:()=>records,getQueue:()=>queue,getJobs:()=>jobs,getInventory:()=>inventory,setEditing:(id,v)=>{editing=id;editVersion=v},setPhotos:(photos)=>draftPhotos=photos};';
 const location={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',lanRoom:'Lan Room 2',remarks:''};
 function base(){return schema.withJobSummary({...location,jobs:[schema.newJob('TR')],photos:[]});}
-async function browser(){
+async function browser({storageDelay=0,earlyLogin=false}={}){
  const nodes={};const node=id=>nodes[id]??={value:['categoryFilter','lanFilter','expansionFilter'].includes(id)?'all':id==='network'?'MOE-Owned':id==='bulkTarget'?'all':'',textContent:'',dataset:{},disabled:false,classList:{add(){},remove(){},toggle(){}},append(){},focus(){},addEventListener(){},reportValidity(){return true},querySelector(){return node('emptyTitle')},querySelectorAll(){return []},reset(){for(const f of schema.locationFields)node(f).value=f==='network'?'MOE-Owned':'';node('photo').value='';}};
  let stored,failStorage=false;const transaction=()=>{const tx={objectStore:()=>({get:()=>{const req={};queueMicrotask(()=>{req.result=stored;req.onsuccess?.();});return req;},put(value){queueMicrotask(()=>{if(failStorage){tx.error=new Error('Full');tx.onerror?.();}else{stored=structuredClone(value);tx.oncomplete?.();}});}})};return tx;};
  const local={},state={remote:[],writes:0,failApi:0};
- const context={...schema,console,structuredClone,Blob,URL,setTimeout,FileReader:class{},setInterval:()=>{},crypto, navigator:{onLine:true},window:{scrollTo(){},addEventListener(){}},document:{getElementById:node,querySelector:()=>node('photoLabel'),querySelectorAll:()=>[],createElement:()=>({}),body:{append(){}}},localStorage:{getItem:k=>local[k],setItem:(k,v)=>local[k]=v,removeItem:k=>delete local[k]},indexedDB:{open:()=>{const req={};queueMicrotask(()=>{req.result={transaction,createObjectStore(){}};req.onsuccess();});return req;}},confirm:()=>true,fetch:async(url,opts)=>{
+ const context={...schema,console,structuredClone,Blob,URL,setTimeout,FileReader:class{},setInterval:()=>{},crypto, navigator:{onLine:true},window:{scrollTo(){},addEventListener(){}},document:{getElementById:node,querySelector:()=>node('photoLabel'),querySelectorAll:()=>[],createElement:()=>({}),body:{append(){}}},localStorage:{getItem:k=>local[k],setItem:(k,v)=>local[k]=v,removeItem:k=>delete local[k]},indexedDB:{open:()=>{const req={};setTimeout(()=>{req.result={transaction,createObjectStore(){}};req.onsuccess();},storageDelay);return req;}},confirm:()=>true,fetch:async(url,opts)=>{
  if(state.failApi)return new Response(JSON.stringify({error:'Test failure'}),{status:state.failApi});
- if(url.endsWith('/session'))return Response.json({ok:true});if(url.includes('inventory?'))return Response.json({items:[],nextOffset:null});
+ if(url.endsWith('/login')){state.loginCalls=(state.loginCalls||0)+1;return Response.json({ok:true});}if(url.endsWith('/session'))return Response.json({ok:true});if(url.includes('inventory?'))return Response.json({items:[],nextOffset:null});
  if(url.includes('entries?'))return Response.json({entries:state.remote,nextOffset:null});
  if(opts?.method==='POST'||opts?.method==='PUT'){state.writes++;const body=JSON.parse(opts.body);const r={...body.entry,photo:undefined,photos:(body.entry.photos||[]).map((_,remoteIndex)=>({remoteIndex})),updatedAt:'server-version'};state.remote=[r];return Response.json({entry:r});}return Response.json({ok:true});
- }};vm.createContext(context);vm.runInContext(script,context);await new Promise(r=>setTimeout(r,10));return{context,state,node,api:context.testApi,setStorageFailure:value=>failStorage=value};
+ }};vm.createContext(context);vm.runInContext(script,context);const disabledDuringOpen=node('unlock').disabled;const pendingLogin=earlyLogin?node('loginForm').onsubmit({preventDefault(){}}):null;await new Promise(r=>setTimeout(r,storageDelay+15));if(pendingLogin)await pendingLogin;return{disabledDuringOpen,context,state,node,api:context.testApi,setStorageFailure:value=>failStorage=value};
 }
 function fill(b){for(const f of schema.locationFields)b.node(f).value=location[f];}
 test('offline capture keeps location context but clears room/AP identifiers, then syncs',async()=>{
@@ -41,4 +41,8 @@ test('sync conflicts preserve local multi-AP draft and failed status',async()=>{
 });
 test('apply common requirements respects target and TR relocation applicability',async()=>{
  const b=await browser();b.api.addJob('Expansion');b.node('bulkTarget').value='all';b.node('bulkCabling').value='Yes';b.node('applyCabling').onclick();assert.equal(b.api.getJobs()[0].cabling,'Not assessed');assert.equal(b.api.getJobs()[1].cabling,'Yes');b.node('bulkBracket').value='true';b.node('applyBracket').onclick();assert.equal(b.api.getJobs()[0].bracket,false);assert.equal(b.api.getJobs()[1].bracket,true);
+});
+
+test('login during delayed storage startup waits until device storage is ready',async()=>{
+ const b=await browser({storageDelay:40,earlyLogin:true});assert.equal(b.disabledDuringOpen,true);assert.equal(b.state.loginCalls,1);assert.equal(b.node('unlock').disabled,false);assert.doesNotMatch(b.node('loginError').textContent,/transaction/);assert.equal(b.api.getQueue().length,0);
 });
