@@ -84,7 +84,7 @@ export function jobTotals(records) {
     for(const j of locationJobs(record)){
       const exp=j.type==='Expansion';if(exp)t.expansion++;else t.tr++;
       if(exp||j.relocation==='Yes'){if(j.cabling==='Yes')t[exp?'expansionCables':'relocationCables']++;else if(j.cabling==='Not assessed')t.pendingCabling++;}
-      if(exp&&j.bracket)t.brackets++;
+      if(j.bracket)t.brackets++;
       if(j.equipment==='Scaffolding'){t.scaffoldingJobs++;scaffold=true;}
       if(j.equipment==='Scissor lift'){t.liftJobs++;lift=true;}
       if(j.equipment==='Needs assessment')t.equipmentPending++;

@@ -40,9 +40,14 @@ test('sync conflicts preserve local multi-AP draft and failed status',async()=>{
  const b=await browser();b.context.navigator.onLine=false;fill(b);await b.api.submitLocation(true);b.context.navigator.onLine=true;b.state.failApi=409;await b.api.sync();assert.equal(b.api.getQueue().length,1);assert.match(b.node('saveStatus').textContent,/Sync failed/);assert.equal(b.api.getRecords()[0].jobs.length,1);
 });
 test('apply common requirements respects target and TR relocation applicability',async()=>{
- const b=await browser();b.api.addJob('Expansion');b.node('bulkTarget').value='all';b.node('bulkCabling').value='Yes';b.node('applyCabling').onclick();assert.equal(b.api.getJobs()[0].cabling,'Not assessed');assert.equal(b.api.getJobs()[1].cabling,'Yes');b.node('bulkBracket').value='true';b.node('applyBracket').onclick();assert.equal(b.api.getJobs()[0].bracket,false);assert.equal(b.api.getJobs()[1].bracket,true);
+ const b=await browser();b.api.addJob('Expansion');b.node('bulkTarget').value='all';b.node('bulkCabling').value='Yes';b.node('applyCabling').onclick();assert.equal(b.api.getJobs()[0].cabling,'Not assessed');assert.equal(b.api.getJobs()[1].cabling,'Yes');b.node('bulkBracket').value='true';b.node('applyBracket').onclick();assert.equal(b.api.getJobs()[0].bracket,true);assert.equal(b.api.getJobs()[1].bracket,true);
 });
 
 test('login during delayed storage startup waits until device storage is ready',async()=>{
  const b=await browser({storageDelay:40,earlyLogin:true});assert.equal(b.disabledDuringOpen,true);assert.equal(b.state.loginCalls,1);assert.equal(b.node('unlock').disabled,false);assert.doesNotMatch(b.node('loginError').textContent,/transaction/);assert.equal(b.api.getQueue().length,0);
+});
+
+test('TR, relocated TR and expansion brackets all count and reset collapses common controls',async()=>{
+ const jobs=[{...schema.newJob('TR'),bracket:true},{...schema.newJob('TR'),relocation:'Yes',reason:'Fan',bracket:true},{...schema.newJob('Expansion'),bracket:true}];assert.equal(schema.jobTotals([{...location,jobs}]).brackets,3);
+ const b=await browser();assert.match(b.node('jobsTR').innerHTML,/L-bracket required/);b.node('commonRequirements').open=true;b.api.resetForm();assert.equal(b.node('commonRequirements').open,false);
 });

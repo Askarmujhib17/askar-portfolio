@@ -77,7 +77,7 @@ function mutate(callback) {
 }
 function options(values,value){return values.map(v=>`<option value="${esc(v)}"${v===value?' selected':''}>${esc(v)}</option>`).join('');}
 function jobLabel(job){const group=jobs.filter(j=>j.type===job.type);return `${job.type==='TR'?'TR':'EXP'}-${String(group.indexOf(job)+1).padStart(2,'0')}`;}
-function jobSummary(job,label){return `${label} · ${job.hostname||'No hostname'} · Cable: ${job.type==='TR'&&job.relocation!=='Yes'?'No':job.cabling} · ${job.equipment}${job.type==='Expansion'&&job.bracket?' · L-bracket':''}`;}
+function jobSummary(job,label){return `${label} · ${job.hostname||'No hostname'} · Cable: ${job.type==='TR'&&job.relocation!=='Yes'?'No':job.cabling} · ${job.equipment}${job.bracket?' · L-bracket':''}`;}
 function jobInput(j,label,field,extra=''){return `<div><label for="${esc(j.id)}-${field}">${label}</label><input id="${esc(j.id)}-${field}" data-field="${field}" value="${esc(j[field])}" maxlength="${field==='mac'?30:field==='serial'?100:150}" ${extra}></div>`;}
 function renderJobs(openId){
  for(const type of ['TR','Expansion']){
@@ -86,7 +86,7 @@ function renderJobs(openId){
    return `<details class="apjob" data-job="${esc(j.id)}"${j.id===openId?' open':''}><summary><strong data-job-summary>${esc(jobSummary(j,label))}</strong></summary><div class="jobbody"><div class="grid">${jobInput(j,type==='TR'?'Old AP Hostname (inventory search)':'Proposed AP label / hostname (optional)','hostname',type==='TR'?'list="inventoryNames" autocomplete="off"':'')}${jobInput(j,'AP Model (optional)','model')}${type==='TR'?jobInput(j,'Old AP Serial (optional)','serial')+jobInput(j,'Old AP MAC (optional)','mac'):''}
    ${type==='TR'?`<div><label>Relocate existing AP?</label><select data-field="relocation">${options(['No','Yes'],j.relocation)}</select></div><div class="full relocationReason${relocated?'':' hidden'}"><label>Relocation reason *</label><textarea data-field="reason" maxlength="1000"${relocated?' required':''}>${esc(j.reason)}</textarea></div>`:''}
    <div class="jobCabling${type==='Expansion'||relocated?'':' hidden'}"><label>New cabling required?</label><select data-field="cabling">${options(['No','Yes','Not assessed'],j.cabling)}</select></div><div><label>Access equipment</label><select data-field="equipment">${options(equipmentOptions,j.equipment)}</select></div>
-   ${type==='Expansion'?`<div><label>L-bracket required?</label><select data-field="bracket"><option value="false"${!j.bracket?' selected':''}>No</option><option value="true"${j.bracket?' selected':''}>Yes</option></select></div>`:''}<div class="full"><label>AP-specific notes (optional)</label><textarea data-field="notes" maxlength="1000">${esc(j.notes)}</textarea></div></div><div class="tools"><button type="button" data-similar="${esc(j.id)}">+ Add similar AP</button><button type="button" data-remove-job="${esc(j.id)}" class="danger">Remove AP</button></div></div></details>`;
+   <div><label>L-bracket required?</label><select data-field="bracket"><option value="false"${!j.bracket?' selected':''}>No</option><option value="true"${j.bracket?' selected':''}>Yes</option></select></div><div class="full"><label>AP-specific notes (optional)</label><textarea data-field="notes" maxlength="1000">${esc(j.notes)}</textarea></div></div><div class="tools"><button type="button" data-similar="${esc(j.id)}">+ Add similar AP</button><button type="button" data-remove-job="${esc(j.id)}" class="danger">Remove AP</button></div></div></details>`;
   }).join('');
  }
  $('expansionLegacy').classList.toggle('hidden',!expansionUnrecorded);photoRules();
@@ -99,7 +99,7 @@ function photoUrlFor(record,photo){return photo.data||`${API}/photos/${record.id
 function renderPhotos(){photoRules();$('photoList').innerHTML=draftPhotos.map((p,i)=>`<div class="photocard"><img src="${esc(photoUrlFor({id:editing},p))}" alt="Room photo ${i+1}"><p class="hint">Photo ${i+1}</p><button type="button" data-replace-photo="${i}">Replace</button> <button type="button" data-remove-photo="${i}" class="danger">Remove</button></div>`).join('');}
 function resetForm(retain=false){
  const carried=retain?Object.fromEntries(['building','floor','lanRoom','network','category'].map(f=>[f,$(f).value])):{};
- editing=null;editVersion=null;draftPhotos=[];expansionUnrecorded=false;jobChoiceTouched=false;$('form').reset();Object.entries(carried).forEach(([f,v])=>$(f).value=v);
+ $('commonRequirements').open=false;editing=null;editVersion=null;draftPhotos=[];expansionUnrecorded=false;jobChoiceTouched=false;$('form').reset();Object.entries(carried).forEach(([f,v])=>$(f).value=v);
  jobs=[newJob('TR')];if($('category').value==='Classrooms')jobs.push(newJob('Expansion'));
  $('formTitle').textContent='New location survey';$('save').textContent='Save & next location →';$('saveBlank').classList.remove('hidden');$('cancel').classList.add('hidden');renderJobs(jobs[0].id);renderPhotos();formDirty=false;
 }
@@ -110,7 +110,7 @@ function filteredRecords(){const q=$('search').value.toLowerCase();return record
  const text=[...locationFields.map(f=>r[f]),...r.jobs.flatMap(j=>Object.values(j))].join(' ').toLowerCase();
  return text.includes(q)&&($('categoryFilter').value==='all'||r.category===$('categoryFilter').value)&&($('lanFilter').value==='all'||r.lanRoom===$('lanFilter').value)&&($('expansionFilter').value==='all'||exp===$('expansionFilter').value);
  });}
-function reviewJobs(record){return record.jobs.map((j,i)=>`<details><summary>${esc(`${j.type==='TR'?'TR':'EXP'} · ${j.hostname||'Unnamed AP'} · ${j.equipment}`)}</summary><p>Model: ${esc(j.model||'—')}<br>Serial: ${esc(j.serial||'—')}<br>MAC: ${esc(j.mac||'—')}<br>Relocation: ${j.type==='TR'?esc(j.relocation):'N/A'}<br>Cabling: ${esc(j.type==='TR'&&j.relocation!=='Yes'?'No':j.cabling)}<br>L-bracket: ${j.type==='Expansion'?(j.bracket?'Yes':'No'):'N/A'}<br>Reason: ${esc(j.reason||'—')}<br>Notes: ${esc(j.notes||'—')}</p></details>`).join('');}
+function reviewJobs(record){return record.jobs.map((j,i)=>`<details><summary>${esc(`${j.type==='TR'?'TR':'EXP'} · ${j.hostname||'Unnamed AP'} · ${j.equipment}`)}</summary><p>Model: ${esc(j.model||'—')}<br>Serial: ${esc(j.serial||'—')}<br>MAC: ${esc(j.mac||'—')}<br>Relocation: ${j.type==='TR'?esc(j.relocation):'N/A'}<br>Cabling: ${esc(j.type==='TR'&&j.relocation!=='Yes'?'No':j.cabling)}<br>L-bracket: ${j.bracket?'Yes':'No'}<br>Reason: ${esc(j.reason||'—')}<br>Notes: ${esc(j.notes||'—')}</p></details>`).join('');}
 function render(){
  $('total').textContent=records.length;$('count').textContent=records.length;const filtered=filteredRecords();$('listCount').textContent=`Showing ${filtered.length} of ${records.length} locations`;
  const current=jobTotals(filtered),all=jobTotals(records);const metrics=[['Locations','locations'],['TR APs','tr'],['Additional APs','expansion'],['Total APs','totalAPs'],['Relocation cable runs','relocationCables'],['Expansion cable runs','expansionCables'],['Total new cable runs','totalCables'],['L-brackets','brackets'],['Scaffolding · AP jobs','scaffoldingJobs'],['Scaffolding · locations','scaffoldingLocations'],['Scissor lift · AP jobs','liftJobs'],['Scissor lift · locations','liftLocations'],['Cabling not assessed','pendingCabling'],['Equipment needs assessment','equipmentPending'],['Expansion not recorded · locations','expansionUnrecorded']];
@@ -217,7 +217,7 @@ for(const id of ['jobsTR','jobsExpansion']){
 }
 for(const [button,field,input] of [['applyEquipment','equipment','bulkEquipment'],['applyCabling','cabling','bulkCabling'],['applyBracket','bracket','bulkBracket']])$(button).onclick=()=>{
  const target=$('bulkTarget').value;if(!confirm('Apply this requirement to matching AP jobs in this location?'))return;
- for(const job of jobs){if(target!=='all'&&job.type!==target)continue;if(field==='cabling'&&job.type==='TR'&&job.relocation!=='Yes')continue;if(field==='bracket'&&job.type!=='Expansion')continue;job[field]=field==='bracket'?$(input).value==='true':$(input).value;}
+ for(const job of jobs){if(target!=='all'&&job.type!==target)continue;if(field==='cabling'&&job.type==='TR'&&job.relocation!=='Yes')continue;job[field]=field==='bracket'?$(input).value==='true':$(input).value;}
  formDirty=true;renderJobs();
 };
 $('form').addEventListener('input',()=>formDirty=true);
@@ -278,7 +278,7 @@ $('pendingRows').onclick=async e=>{
 const csvCell=value=>'"'+String(value??'').replace(/^(\s*)([=+@-])/,'$1\'$2').replace(/"/g,'""')+'"';
 $('csv').onclick=()=>{
  const headers=['Building','Floor','Location','Category','Network','LAN / Server Room','Job','Type','Hostname','Model','Serial','MAC','Relocation','Reason','Cabling','Equipment','L-bracket','AP Notes','Location Remarks','Sync'];
- const rows=[];for(const r of records){const counters={TR:0,Expansion:0};for(const j of r.jobs){const label=`${j.type==='TR'?'TR':'EXP'}-${String(++counters[j.type]).padStart(2,'0')}`;rows.push([r.building,r.floor,r.room,r.category,r.network,r.lanRoom,label,j.type,j.hostname,j.model,j.serial,j.mac,j.type==='TR'?j.relocation:'N/A',j.reason,j.type==='TR'&&j.relocation!=='Yes'?'No':j.cabling,j.equipment,j.type==='Expansion'?(j.bracket?'Yes':'No'):'N/A',j.notes,r.remarks,queue.some(q=>q.id===r.id)?'Pending':'Synced']);}}
+ const rows=[];for(const r of records){const counters={TR:0,Expansion:0};for(const j of r.jobs){const label=`${j.type==='TR'?'TR':'EXP'}-${String(++counters[j.type]).padStart(2,'0')}`;rows.push([r.building,r.floor,r.room,r.category,r.network,r.lanRoom,label,j.type,j.hostname,j.model,j.serial,j.mac,j.type==='TR'?j.relocation:'N/A',j.reason,j.type==='TR'&&j.relocation!=='Yes'?'No':j.cabling,j.equipment,j.bracket?'Yes':'No',j.notes,r.remarks,queue.some(q=>q.id===r.id)?'Pending':'Synced']);}}
  saveDownload('ap-survey-jobs.csv',new Blob(['\ufeff'+[headers,...rows].map(row=>row.map(csvCell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
 };
 $('backup').onclick=async()=>{

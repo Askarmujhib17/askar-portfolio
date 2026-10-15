@@ -188,3 +188,5 @@ not represent bookings/days. Summary calculations are local, with no separate
 Supabase counter updates. Duplicate hostnames within one location are rejected;
 across locations they are warned and can be explicitly accepted (for example,
 when older surveys from another school share a hostname).
+
+L-brackets are available on every AP job, including TR without relocation. Bracket totals and CSV/review use every job's Yes/No answer. Common-requirement controls are collapsed by default and expand on click. No schema migration is required for this change.
