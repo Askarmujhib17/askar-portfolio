@@ -143,3 +143,48 @@ Remarks apply to the whole room, are optional, and are included in editing,
 CSV and JSON backups. Expansion filtering is available alongside category,
 LAN/server-room and text filters. No additional image copy is uploaded for
 expansion, and summary calculations run locally.
+
+## Multiple AP jobs per location
+
+Run `supabase/migrations/20261015_ap_survey_location_jobs.sql` before deployment.
+It adds `ap_jobs` (JSONB), `photo_paths` (text array), a legacy-expansion review
+flag, and a private AP inventory table. Existing location IDs, scalar answers,
+remarks, timestamps and photos are retained. The API converts old entries into
+AP jobs when reading them, then stores the job array at the next edit. Existing
+APs have equipment marked Needs assessment, rather than assuming None. New APs
+default to None. Old clients are asked to reload before changing a location that
+has been saved with the multi-AP form, preventing lost AP jobs.
+
+Every location supports up to 100 TR/expansion jobs. New classrooms start with
+one TR and one expansion job; other locations start with one TR. Expansion
+cabling and L-bracket default to No. Duplicate AP controls retain model and
+requirements but clear hostname/serial/MAC. Shared equipment/cabling/bracket
+controls apply only to matching jobs and remain individually editable.
+Save & next retains building, floor, category, network and LAN room, clears
+room/AP identifiers/photos/remarks, and creates the next location's defaults.
+Save & blank resets everything. Legacy duplicate locations are not automatically
+merged: review them manually to avoid combining distinct locations by mistake.
+
+Classrooms keep one shared photo; other locations allow up to six. New photos
+are resized to a maximum 2200-pixel longest edge and JPEG quality 0.85 in-browser.
+Up to 10 MB of new photo bytes are permitted per location; photos reference the
+same private bucket. Replacement/removal changes the active references; old
+objects remain for the existing manual cleanup policy. Photo endpoints check
+session and location ownership before accepting an index into that location's
+saved photo list. Backups embed photos and preserve all AP jobs. CSV has one row
+per AP job. Version 1 backups can be imported and converted to the new shape.
+
+Inventory CSV/TSV import accepts Hostname plus optional Model, Serial and MAC
+columns (common old-AP header variants also work). Maximum 2,000 APs per import.
+An import adds/updates hostnames; it doesn't delete other inventory or modify
+saved survey jobs. Inventory is currently workspace-wide, not school-specific:
+use it for the active school's list. The inventory page can restore its copy
+from a downloaded JSON backup separately, with an overwrite confirmation.
+Inventory is cached for offline lookup after the first online load.
+
+Review shows filtered/full-register APs, cable runs, L-brackets, equipment AP jobs
+and affected locations, plus pending assessments. Equipment-location counts do
+not represent bookings/days. Summary calculations are local, with no separate
+Supabase counter updates. Duplicate hostnames within one location are rejected;
+across locations they are warned and can be explicitly accepted (for example,
+when older surveys from another school share a hostname).

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handle, issueSession, authenticated, photoBytes } from '../server/ap-survey.js';
-import { validateEntry } from '../public/ap-survey/schema.js';
+import { newJob, withJobSummary, normalizeLocation, validateLocation, jobTotals, duplicateJob, parseInventory, validateEntry } from '../public/ap-survey/schema.js';
 const env={SUPABASE_URL:'https://example.supabase.co',SUPABASE_SECRET_KEY:'test-only',AP_SURVEY_PIN:'123456',AP_SURVEY_SESSION_SECRET:'test-session-secret-not-a-real-key-12345'};
 const id='ba8b95b5-8fb0-4484-a5a3-1d746881d33f';
 const entry={id,building:'Block E',floor:'1',room:'E1-3 CLASSROOM',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 1',relocation:'No',reason:'',newCabling:''};
@@ -87,4 +87,38 @@ test('expansion requires one shared photo, saves both cabling answers and remark
 test('legacy records do not get inferred expansion and remarks are bounded',async()=>{
  const db=fakeDb(),cookie=await session();const response=await handle(request('entries','POST',{entry},cookie),env,db);assert.equal(response.status,201);const saved=(await response.json()).entry;assert.equal(saved.additionalAP,'');assert.equal(saved.remarks,'');
  assert.ok(validateEntry({...entry,additionalAP:'Yes',expansionCabling:'Maybe'}));assert.ok(validateEntry({...entry,remarks:'a'.repeat(3001)}));
+});
+
+test('multi-AP locations persist quantities, extras and one classroom photo',async()=>{
+ const db=fakeDb(),cookie=await session();const jobs=[{...newJob('TR'),hostname:'A',relocation:'Yes',reason:'Fan',cabling:'Yes',equipment:'Scissor lift'},{...newJob('TR'),hostname:'B',equipment:'Scissor lift'},{...newJob('Expansion'),cabling:'Yes',bracket:true,equipment:'Scaffolding'}];
+ const multi=withJobSummary({...entry,jobs,photos:[{data:'data:image/jpeg;base64,/9j/AA=='}],expansionUnrecorded:false});
+ let response=await handle(request('entries','POST',{entry:multi},cookie),env,db);assert.equal(response.status,201);let saved=(await response.json()).entry;assert.equal(saved.jobs.length,3);assert.equal(saved.photos.length,1);assert.equal(db.uploads,1);
+ const totals=jobTotals([saved]);assert.equal(totals.totalCables,2);assert.equal(totals.brackets,1);assert.equal(totals.liftJobs,2);assert.equal(totals.liftLocations,1);assert.equal(totals.scaffoldingLocations,1);
+ // PostgreSQL JSONB may return objects with a different property order.
+ db.rows[0].ap_jobs=db.rows[0].ap_jobs.map(j=>Object.fromEntries(Object.entries(j).reverse()));
+ response=await handle(request('entries','POST',{entry:multi},cookie),env,db);assert.equal(response.status,201);assert.equal(db.rows.length,1);assert.equal(db.uploads,1);
+ response=await handle(request('entries/'+id,'PUT',{entry:{...saved,remarks:'Updated'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,200);saved=(await response.json()).entry;assert.equal(db.uploads,1);assert.equal(saved.jobs[2].bracket,true);
+ response=await handle(request('entries/'+id,'PUT',{entry,expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,409);
+});
+test('multiple photos allowed outside classrooms and photo references cannot escape a location',async()=>{
+ const db=fakeDb(),cookie=await session(),photo={data:'data:image/jpeg;base64,/9j/AA=='};
+ const multi=withJobSummary({...entry,category:'canteen',jobs:[newJob('Expansion')],photos:[photo,photo]});
+ let response=await handle(request('entries','POST',{entry:multi},cookie),env,db);assert.equal(response.status,201);let saved=(await response.json()).entry;assert.equal(saved.photos.length,2);
+ response=await handle(request('entries/'+id,'PUT',{entry:{...saved,photos:[{remoteIndex:99}]},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,400);
+ response=await handle(request('entries/'+id,'PUT',{entry:{...saved,category:'Classrooms'},expectedUpdatedAt:saved.updatedAt},cookie),env,db);assert.equal(response.status,400);
+ response=await handle(request('photos/'+id+'?photo=1','GET',null,cookie),env,db);assert.equal(response.status,200);
+ response=await handle(request('photos/'+id+'?photo=2','GET',null,cookie),env,db);assert.equal(response.status,404);
+});
+test('duplicate identifiers, legacy conversion and inventory parsing',()=>{
+ const first={...newJob('TR'),hostname:'AP01',serial:'S',mac:'aabb.ccdd.eeff'},second=duplicateJob(first);assert.equal(second.hostname,'');assert.equal(second.serial,'');assert.equal(second.mac,'');assert.notEqual(first.id,second.id);
+ assert.ok(validateLocation(withJobSummary({...entry,jobs:[first,{...second,hostname:'ap01'}]})));
+ const legacy=normalizeLocation({...entry,additionalAP:'Yes',expansionCabling:'Not assessed'});assert.equal(legacy.jobs.length,2);assert.equal(legacy.jobs[1].cabling,'Not assessed');assert.equal(legacy.jobs[0].equipment,'Needs assessment');
+ const items=parseInventory('Hostname,Model,Serial,MAC\r\nL1AP01,"Cisco, model",S123,aabb.ccdd.eeff\r\n');assert.equal(items[0].model,'Cisco, model');assert.equal(items[0].serial,'S123');
+ assert.throws(()=>parseInventory('Hostname\nAP01\nap01'),/duplicate/);assert.throws(()=>parseInventory('Room,Other\nA,B'),/Hostname/);
+});
+test('inventory API validates and upserts only approved columns after authentication',async()=>{
+ let written;const db={from:table=>{assert.equal(table,'ap_survey_inventory');return{upsert:async rows=>{written=rows;return{error:null}}};}};const cookie=await session();
+ let response=await handle(request('inventory','POST',{items:[{hostname:' L1AP01 ',model:'C9130',serial:'S',mac:'aabb.ccdd.eeff',unwanted:'ignored'}]},cookie),env,db);assert.equal(response.status,200);assert.equal(written[0].hostname_key,'l1ap01');assert.equal(written[0].unwanted,undefined);
+ response=await handle(request('inventory','POST',{items:[{hostname:'AP01',model:'',serial:'',mac:'invalid'}]},cookie),env,db);assert.equal(response.status,400);
+ response=await handle(request('inventory','POST',{items:[]}),env,db);assert.equal(response.status,401);
 });

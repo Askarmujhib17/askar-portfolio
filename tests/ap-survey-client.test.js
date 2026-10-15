@@ -2,67 +2,43 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs';
-import { fields, categories, lanRooms, validateEntry, normalizeExpansion, surveyTotals } from '../public/ap-survey/schema.js';
-const script=fs.readFileSync(new URL('../public/ap-survey/app.js',import.meta.url),'utf8').replace(/^import[^\n]+\n/,'')+'\nglobalThis.testApi={enqueue,sync,refresh,saveState,mutate,resetForm,render,getRecords:()=>records,getQueue:()=>queue,setEditing:(id,version)=>{editing=id;editVersion=version},setPhoto:(photo)=>currentPhoto=photo};';
-const entry={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',model:'',hostname:'',serial:'',mac:'',lanRoom:'Lan Room 2',relocation:'No',reason:'',newCabling:'',additionalAP:'No',expansionCabling:'',remarks:''};
+import * as schema from '../public/ap-survey/schema.js';
+const script=fs.readFileSync(new URL('../public/ap-survey/app.js',import.meta.url),'utf8').replace(/^import[^\n]+\n/,'')+'\nglobalThis.testApi={enqueue,sync,refresh,saveState,mutate,resetForm,render,addJob,submitLocation,renderPhotos,getRecords:()=>records,getQueue:()=>queue,getJobs:()=>jobs,getInventory:()=>inventory,setEditing:(id,v)=>{editing=id;editVersion=v},setPhotos:(photos)=>draftPhotos=photos};';
+const location={id:'ba8b95b5-8fb0-4484-a5a3-1d746881d33f',building:'E',floor:'1',room:'E1-3',category:'Classrooms',network:'MOE-Owned',lanRoom:'Lan Room 2',remarks:''};
+function base(){return schema.withJobSummary({...location,jobs:[schema.newJob('TR')],photos:[]});}
 async function browser(){
- const nodes={};const node=id=>nodes[id]??={value:['categoryFilter','lanFilter','expansionFilter'].includes(id)?'all':id==='network'?'MOE-Owned':'',textContent:'',dataset:{},disabled:false,classList:{add(){},remove(){},toggle(){}},append(){},focus(){},reportValidity(){return true},querySelector(){return node('emptyTitle')},reset(){for(const f of fields)node(f).value=f==='network'?'MOE-Owned':'';node('photo').value='';}};
- let stored,failStorage=false;
- const transaction=()=>{const tx={objectStore:()=>({get:()=>{const req={};queueMicrotask(()=>{req.result=stored;req.onsuccess?.();});return req;},put(value){queueMicrotask(()=>{if(failStorage){tx.error=new Error('Full');tx.onerror?.();}else{stored=structuredClone(value);tx.oncomplete?.();}});}})};return tx;};
- const local={};let uuid=1;
- const state={remote:[],writes:0,failApi:0};
- const context={console,fields,categories,lanRooms,validateEntry,normalizeExpansion,surveyTotals,structuredClone,Blob,URL,setTimeout,FileReader:class{},setInterval:()=>{},crypto:{randomUUID:()=>`ba8b95b5-8fb0-4484-a5a3-${String(uuid++).padStart(12,'0')}`},navigator:{onLine:true},window:{scrollTo(){},addEventListener(){}},document:{getElementById:node,querySelector:()=>node('photoLabel'),createElement:()=>({}),body:{append(){}}},localStorage:{getItem:k=>local[k],setItem:(k,v)=>local[k]=v,removeItem:k=>delete local[k]},indexedDB:{open:()=>{const req={};queueMicrotask(()=>{req.result={transaction,createObjectStore(){}};req.onsuccess();});return req;}},confirm:()=>true,fetch:async(url,opts)=>{
- if(state.failApi) return new Response(JSON.stringify({error:'Test failure'}),{status:state.failApi});
- if(url.endsWith('/session'))return Response.json({ok:true});
+ const nodes={};const node=id=>nodes[id]??={value:['categoryFilter','lanFilter','expansionFilter'].includes(id)?'all':id==='network'?'MOE-Owned':id==='bulkTarget'?'all':'',textContent:'',dataset:{},disabled:false,classList:{add(){},remove(){},toggle(){}},append(){},focus(){},addEventListener(){},reportValidity(){return true},querySelector(){return node('emptyTitle')},querySelectorAll(){return []},reset(){for(const f of schema.locationFields)node(f).value=f==='network'?'MOE-Owned':'';node('photo').value='';}};
+ let stored,failStorage=false;const transaction=()=>{const tx={objectStore:()=>({get:()=>{const req={};queueMicrotask(()=>{req.result=stored;req.onsuccess?.();});return req;},put(value){queueMicrotask(()=>{if(failStorage){tx.error=new Error('Full');tx.onerror?.();}else{stored=structuredClone(value);tx.oncomplete?.();}});}})};return tx;};
+ const local={},state={remote:[],writes:0,failApi:0};
+ const context={...schema,console,structuredClone,Blob,URL,setTimeout,FileReader:class{},setInterval:()=>{},crypto, navigator:{onLine:true},window:{scrollTo(){},addEventListener(){}},document:{getElementById:node,querySelector:()=>node('photoLabel'),querySelectorAll:()=>[],createElement:()=>({}),body:{append(){}}},localStorage:{getItem:k=>local[k],setItem:(k,v)=>local[k]=v,removeItem:k=>delete local[k]},indexedDB:{open:()=>{const req={};queueMicrotask(()=>{req.result={transaction,createObjectStore(){}};req.onsuccess();});return req;}},confirm:()=>true,fetch:async(url,opts)=>{
+ if(state.failApi)return new Response(JSON.stringify({error:'Test failure'}),{status:state.failApi});
+ if(url.endsWith('/session'))return Response.json({ok:true});if(url.includes('inventory?'))return Response.json({items:[],nextOffset:null});
  if(url.includes('entries?'))return Response.json({entries:state.remote,nextOffset:null});
- if(opts?.method==='POST'||opts?.method==='PUT'){state.writes++;const body=JSON.parse(opts.body);const r={...body.entry,photo:undefined,hasPhoto:!!body.entry.photo,updatedAt:'server-version'};state.remote=[r];return Response.json({entry:r});}
- return Response.json({ok:true});
- }};
- vm.createContext(context);vm.runInContext(script,context);await new Promise(resolve=>setTimeout(resolve,10));
- return{context,state,node,api:context.testApi,setStorageFailure:value=>failStorage=value};
+ if(opts?.method==='POST'||opts?.method==='PUT'){state.writes++;const body=JSON.parse(opts.body);const r={...body.entry,photo:undefined,photos:(body.entry.photos||[]).map((_,remoteIndex)=>({remoteIndex})),updatedAt:'server-version'};state.remote=[r];return Response.json({entry:r});}return Response.json({ok:true});
+ }};vm.createContext(context);vm.runInContext(script,context);await new Promise(r=>setTimeout(r,10));return{context,state,node,api:context.testApi,setStorageFailure:value=>failStorage=value};
 }
-test('capture resets after durable local save; offline queue survives for later sync',async()=>{
- const b=await browser();b.context.navigator.onLine=false;for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});
- assert.equal(b.api.getQueue().length,1);assert.equal(b.node('room').value,'');assert.equal(b.state.writes,0);
- b.context.navigator.onLine=true;await b.api.sync();assert.equal(b.api.getQueue().length,0);assert.equal(b.state.writes,1);assert.equal(b.api.getRecords()[0].updatedAt,'server-version');
+function fill(b){for(const f of schema.locationFields)b.node(f).value=location[f];}
+test('offline capture keeps location context but clears room/AP identifiers, then syncs',async()=>{
+ const b=await browser();b.context.navigator.onLine=false;fill(b);b.api.getJobs()[0].hostname='L1AP01';await b.api.submitLocation(true);assert.equal(b.api.getQueue().length,1);assert.equal(b.node('room').value,'');assert.equal(b.node('building').value,'E');assert.equal(b.node('lanRoom').value,'Lan Room 2');assert.equal(b.api.getJobs()[0].hostname,'');assert.equal(b.api.getJobs().length,2);assert.equal(b.state.writes,0);
+ b.context.navigator.onLine=true;await b.api.sync();assert.equal(b.api.getQueue().length,0);assert.equal(b.state.writes,1);assert.match(b.node('saveStatus').textContent,/Synced ✓/);
 });
-test('device storage failure leaves form intact and does not send to server',async()=>{
- const b=await browser();b.setStorageFailure(true);for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});
- assert.equal(b.node('room').value,'E1-3');assert.equal(b.state.writes,0);assert.equal(b.api.getQueue().length,0);
+test('save blank clears context; storage failure preserves unsaved form',async()=>{
+ const b=await browser();b.context.navigator.onLine=false;fill(b);b.setStorageFailure(true);await b.api.submitLocation(false);assert.equal(b.node('room').value,'E1-3');assert.equal(b.api.getQueue().length,0);
+ b.setStorageFailure(false);await b.api.submitLocation(false);assert.equal(b.node('building').value,'');assert.equal(b.api.getJobs().length,1);
 });
-test('category and LAN filters combine with search and count',async()=>{
- const b=await browser();await b.api.saveState([entry,{...entry,id:'other',category:'ISH',lanRoom:'Server Room'}],[]);b.api.render();assert.equal(b.node('listCount').textContent,'Showing 2 of 2 total entries');
- b.node('categoryFilter').value='Classrooms';b.node('lanFilter').value='Lan Room 2';b.api.render();assert.equal(b.node('listCount').textContent,'Showing 1 of 2 total entries');b.node('search').value='not present';b.api.render();assert.equal(b.node('listCount').textContent,'Showing 0 of 2 total entries');
+test('every category supports multiple TR and expansion APs; similar AP clears identifiers',async()=>{
+ const b=await browser();fill(b);b.node('category').value='canteen';b.api.getJobs()[0].hostname='OLD';b.api.getJobs()[0].serial='S1';b.api.getJobs()[0].model='C9130';b.api.getJobs()[0].equipment='Scissor lift';b.api.addJob('TR',b.api.getJobs()[0]);b.api.addJob('Expansion');b.api.addJob('Expansion');assert.equal(b.api.getJobs().length,4);const clone=b.api.getJobs()[1];assert.equal(clone.hostname,'');assert.equal(clone.serial,'');assert.equal(clone.model,'C9130');assert.equal(clone.equipment,'Scissor lift');assert.equal(b.api.getJobs()[2].cabling,'No');assert.equal(b.api.getJobs()[2].bracket,false);
 });
-test('conflicts keep local draft and mark it for review instead of dropping data',async()=>{
- const b=await browser();b.context.navigator.onLine=false;await b.api.enqueue(entry);b.context.navigator.onLine=true;b.state.failApi=409;await b.api.sync();assert.equal(b.api.getQueue().length,1);assert.equal(b.api.getQueue()[0].error,'Test failure');assert.equal(b.api.getRecords()[0].room,'E1-3');
+test('classroom defaults, shared-photo requirement and classroom photo limit',async()=>{
+ const b=await browser();fill(b);b.node('category').onchange();assert.equal(b.api.getJobs().length,2);await b.api.submitLocation(true);assert.equal(b.api.getQueue().length,0);assert.match(b.node('notice').textContent,/wide-angle photo/);
+ b.api.setPhotos([{data:'one'},{data:'two'}]);await b.api.submitLocation(true);assert.equal(b.api.getQueue().length,0);assert.match(b.node('notice').textContent,/one shared photo/);
 });
-test('editing an offline creation retains create operation and photograph',async()=>{
- const b=await browser();b.context.navigator.onLine=false;const photo='data:image/jpeg;base64,/9j/AA==';await b.api.enqueue({...entry,relocation:'Yes',reason:'Near fan',photo});b.api.setEditing(entry.id,null);await b.api.enqueue({...entry,relocation:'Yes',reason:'Fan clearance',photo});assert.equal(b.api.getQueue().length,1);assert.equal(b.api.getQueue()[0].operation,'create');assert.equal(b.api.getQueue()[0].entry.photo,photo);
+test('combined filters change location counts and equipment summaries',async()=>{
+ const b=await browser();const r=base();r.jobs.push({...schema.newJob('Expansion'),cabling:'Yes',equipment:'Scissor lift'});await b.api.saveState([r,{...base(),id:'other',category:'ISH'}],[]);b.node('categoryFilter').value='Classrooms';b.node('expansionFilter').value='Yes';b.api.render();assert.equal(b.node('listCount').textContent,'Showing 1 of 2 locations');assert.match(b.node('cablingSummary').innerHTML,/Scissor lift/);
 });
-test('online submission changes status to Synced only after server acknowledgement',async()=>{
- const b=await browser();for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});
- await new Promise(resolve=>setTimeout(resolve,20));assert.equal(b.api.getQueue().length,0);assert.match(b.node('saveStatus').textContent,/Synced ✓ E1-3/);assert.match(b.node('rows').innerHTML,/Synced ✓/);
+test('sync conflicts preserve local multi-AP draft and failed status',async()=>{
+ const b=await browser();b.context.navigator.onLine=false;fill(b);await b.api.submitLocation(true);b.context.navigator.onLine=true;b.state.failApi=409;await b.api.sync();assert.equal(b.api.getQueue().length,1);assert.match(b.node('saveStatus').textContent,/Sync failed/);assert.equal(b.api.getRecords()[0].jobs.length,1);
 });
-test('failed server submission shows failed status and keeps the draft',async()=>{
- const b=await browser();b.state.failApi=503;for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});
- await new Promise(resolve=>setTimeout(resolve,20));assert.equal(b.api.getQueue().length,1);assert.match(b.node('saveStatus').textContent,/Sync failed/);assert.doesNotMatch(b.node('saveStatus').textContent,/Synced ✓/);
-});
-test('offline submission status says saved on device, never synced',async()=>{
- const b=await browser();b.context.navigator.onLine=false;for(const f of fields)b.node(f).value=entry[f];await b.node('form').onsubmit({preventDefault(){}});assert.match(b.node('saveStatus').textContent,/Saved on device/);assert.doesNotMatch(b.node('saveStatus').textContent,/Synced ✓/);
-});
-test('classrooms default expansion Yes, respect exceptions and require shared photo',async()=>{
- const b=await browser();for(const f of fields)b.node(f).value=entry[f];b.node('category').onchange();assert.equal(b.node('additionalAP').value,'Yes');assert.equal(b.node('photo').required,true);
- b.node('additionalAP').value='No';b.node('additionalAP').onchange();b.node('category').value='ISH';b.node('category').onchange();assert.equal(b.node('additionalAP').value,'No');assert.equal(b.node('photo').required,false);
- b.node('additionalAP').value='Yes';b.node('expansionCabling').value='Not assessed';b.node('additionalAP').onchange();await b.node('form').onsubmit({preventDefault(){}});assert.equal(b.api.getQueue().length,0);assert.match(b.node('notice').textContent,/wide-angle room photo/);
-});
-test('cabling totals count two jobs per room, ignore inactive answers and flag unassessed',()=>{
- const totals=surveyTotals([{...entry,relocation:'Yes',newCabling:'Yes',additionalAP:'Yes',expansionCabling:'Yes'},{...entry,additionalAP:'Yes',expansionCabling:'Not assessed'},{...entry,additionalAP:'',newCabling:'Yes'}]);
- assert.equal(totals.totalCables,2);assert.equal(totals.relocationCables,1);assert.equal(totals.expansionCables,1);assert.equal(totals.pendingCabling,1);assert.equal(totals.additionalAPs,2);assert.equal(totals.expansionUnrecorded,1);
- assert.equal(normalizeExpansion(entry).additionalAP,'No');assert.equal(normalizeExpansion({id:'legacy'}).additionalAP,'');
-});
-test('expansion filter changes review totals and editing restores remarks',async()=>{
- const b=await browser();const r={...entry,additionalAP:'Yes',expansionCabling:'Yes',remarks:'Cable route pending'};
- await b.api.saveState([r,{...entry,id:'other',additionalAP:'No'}],[]);b.node('expansionFilter').value='Yes';b.api.render();assert.equal(b.node('listCount').textContent,'Showing 1 of 2 total entries');assert.match(b.node('cablingSummary').innerHTML,/Total new cable runs/);
- await b.node('rows').onclick({target:{dataset:{edit:r.id}}});assert.equal(b.node('remarks').value,r.remarks);assert.equal(b.node('additionalAP').value,'Yes');assert.equal(b.node('expansionCabling').value,'Yes');
+test('apply common requirements respects target and TR relocation applicability',async()=>{
+ const b=await browser();b.api.addJob('Expansion');b.node('bulkTarget').value='all';b.node('bulkCabling').value='Yes';b.node('applyCabling').onclick();assert.equal(b.api.getJobs()[0].cabling,'Not assessed');assert.equal(b.api.getJobs()[1].cabling,'Yes');b.node('bulkBracket').value='true';b.node('applyBracket').onclick();assert.equal(b.api.getJobs()[0].bracket,false);assert.equal(b.api.getJobs()[1].bracket,true);
 });
