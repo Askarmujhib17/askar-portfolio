@@ -114,7 +114,7 @@ function renderPhotos(){
 function resetForm(retain=false){
  const carried=retain?Object.fromEntries(['building','floor','lanRoom'].map(f=>[f,$(f).value])):{};
  editing=null;editVersion=null;draftPhotos=[];jobs=[schoolJob('TR')];expansionUnrecorded=false;$('form').reset();for(const[f,v]of Object.entries(carried))$(f).value=v;
- $('formTitle').textContent='New location';$('save').textContent='Save & next location →';$('saveBlank').classList.remove('hidden');$('cancel').classList.add('hidden');$('pastePanel').open=false;$('hostnamePaste').value='';renderJobs();renderPhotos();formDirty=false;
+ $('formTitle').textContent='New location';$('save').textContent='Save & next location →';$('saveBlank').classList.remove('hidden');$('cancel').classList.add('hidden');$('pastePanel').open=false;$('hostnamePaste').value='';$('hostnamePasteStatus').textContent='';renderJobs();renderPhotos();formDirty=false;
 }
 function busy(){if(readingPhoto||saving){notify('Wait for the current photo or save to finish.');return true;}return false;}
 function leaveForm(){return !formDirty||confirm('Leave unsaved form changes? Saved drafts are retained.');}
@@ -218,7 +218,32 @@ function addJob(type,source){if(busy())return;if(jobs.length>=100){notify('Maxim
 $('addTR').onclick=()=>addJob('TR');
 function setExpansionQuantity(value){if(busy())return;const amount=Number(value),current=jobs.filter(j=>j.type==='Expansion');if(!Number.isInteger(amount)||amount<0||amount+jobs.filter(j=>j.type==='TR').length>100){notify('Enter a whole number; maximum 100 APs per location.');renderJobs();return;}if(amount<current.length&&current.slice(amount).some(j=>j.hostname||j.bracket||j.cabling==='Yes'||j.notes||j.equipmentOverride||j.lanRoomOverride)&&!confirm('Remove the last additional APs and their requirements?')){renderJobs();return;}jobs=[...jobs.filter(j=>j.type==='TR'),...current.slice(0,amount),...Array.from({length:Math.max(0,amount-current.length)},()=>schoolJob('Expansion'))];expansionUnrecorded=false;formDirty=true;renderJobs();}
 $('expansionQuantity').onchange=e=>setExpansionQuantity(e.target.value);$('lessExpansion').onclick=()=>setExpansionQuantity(Math.max(0,jobs.filter(j=>j.type==='Expansion').length-1));$('moreExpansion').onclick=()=>setExpansionQuantity(jobs.filter(j=>j.type==='Expansion').length+1);$('assessExpansion').onclick=()=>setExpansionQuantity(jobs.filter(j=>j.type==='Expansion').length);
-$('addHostnames').onclick=()=>{if(busy())return;const names=$('hostnamePaste').value.split(/[\r\n,\t]+/).map(v=>v.trim()).filter(Boolean);if(!names.length){notify('Paste at least one hostname.');return;}const existing=jobs.filter(j=>j.hostname.trim()),seen=new Set(existing.map(j=>j.hostname.trim().toLowerCase()));if(names.some(n=>{const key=n.toLowerCase();if(n.length>150||seen.has(key))return true;seen.add(key);return false;})){notify('Check pasted hostnames for duplicates or overly long names.');return;}const blank=jobs.length===1&&jobs[0].type==='TR'&&!jobs[0].hostname&&!jobs[0].model&&!jobs[0].serial&&!jobs[0].mac&&!jobs[0].notes&&!jobs[0].bracket&&jobs[0].relocation==='No'&&!jobs[0].equipmentOverride&&!jobs[0].lanRoomOverride;const remaining=blank?[]:jobs;if(remaining.length+names.length>100){notify('Maximum 100 APs per location.');return;}jobs=[...remaining,...names.map(hostname=>{const item=schoolInventory().find(r=>r.hostname.toLowerCase()===hostname.toLowerCase());return{...schoolJob('TR'),hostname,...(item?{hostname:item.hostname,model:item.model,serial:item.serial,mac:item.mac}:{})};})];$('hostnamePaste').value='';$('pastePanel').open=false;formDirty=true;renderJobs();};
+function hostnamePasteFeedback(message) {
+ $('hostnamePasteStatus').textContent=message;
+}
+$('addHostnames').onclick=()=>{
+ if(busy())return;
+ // Accept real line breaks and separators copied from messages or spreadsheets.
+ const names=$('hostnamePaste').value.replace(/\\r\\n|\\[rn]/g,'\n').split(/[\r\n,\t\\]+/).map(v=>v.trim()).filter(Boolean);
+ if(!names.length){hostnamePasteFeedback('Paste at least one hostname.');return;}
+ if(names.some(n=>n.length>150)){hostnamePasteFeedback('Each hostname must be 150 characters or fewer. Nothing was added.');return;}
+ const seen=new Set(jobs.map(j=>j.hostname.trim().toLowerCase()).filter(Boolean));
+ let skipped=0;
+ const additions=names.filter(name=>{const key=name.toLowerCase();if(seen.has(key)){skipped++;return false;}seen.add(key);return true;});
+ if(!additions.length){hostnamePasteFeedback(`No APs added. ${skipped} duplicate hostname${skipped===1?'':'s'} skipped; already in this location.`);return;}
+ const untouched=job=>job.type==='TR'&&!job.hostname&&!job.model&&!job.serial&&!job.mac&&!job.notes&&!job.reason&&!job.bracket&&job.relocation==='No'&&job.cabling==='No'&&!job.equipmentOverride&&!job.lanRoomOverride;
+ const remaining=jobs.filter(j=>!untouched(j));
+ if(remaining.length+additions.length>100){hostnamePasteFeedback('Maximum 100 APs per location. Nothing was added; shorten the list.');return;}
+ const inventoryItems=schoolInventory();
+ const newJobs=additions.map(hostname=>{
+  const item=inventoryItems.find(r=>r.hostname.toLowerCase()===hostname.toLowerCase());
+  return {...schoolJob('TR'),hostname,...(item?{hostname:item.hostname,model:item.model,serial:item.serial,mac:item.mac}:{})};
+ });
+ jobs=[...remaining,...newJobs];formDirty=true;renderJobs();
+ $('hostnamePaste').value='';
+ hostnamePasteFeedback(`Added ${newJobs.length} AP${newJobs.length===1?'':'s'}.${skipped?` ${skipped} duplicate hostname${skipped===1?'':'s'} skipped.`:''}`);
+ const first=$(`${newJobs[0].id}-hostname`);first.scrollIntoView({behavior:'smooth',block:'center'});first.focus({preventScroll:true});
+};
 function jobEvent(e){const row=e.target.closest('[data-job]'),field=e.target.dataset.field;if(!row||!field)return;const job=jobs.find(j=>j.id===row.dataset.job);if(!job||!['hostname','model','serial','mac','reason','notes','equipmentOverride','lanRoomOverride'].includes(field))return;job[field]=e.target.value;formDirty=true;if(e.type==='change'&&field==='hostname'&&job.type==='TR'){const item=schoolInventory().find(r=>r.hostname.toLowerCase()===job.hostname.trim().toLowerCase());if(item){Object.assign(job,{hostname:item.hostname,model:item.model,serial:item.serial,mac:item.mac});renderJobs();}}}
 for(const id of ['jobsTR','jobsExpansion']){$(id).oninput=jobEvent;$(id).onchange=jobEvent;$(id).onclick=e=>{if(busy())return;const row=e.target.closest('[data-job]'),job=jobs.find(j=>j.id===row?.dataset.job);if(!job)return;const {toggle:field,similar,removeJob}=e.target.dataset;if(field){if(field==='bracket')job.bracket=!job.bracket;else if(['relocation','cabling'].includes(field))job[field]=job[field]==='Yes'?'No':'Yes';if(field==='relocation'){job.cabling='No';if(job.relocation==='No')job.reason='';}formDirty=true;renderJobs(row.querySelector('details')?.open?job.id:undefined);}if(similar)addJob(job.type,job);if(removeJob&&confirm('Remove this AP from the location?')){jobs=jobs.filter(j=>j.id!==removeJob);if(job.type==='Expansion')expansionUnrecorded=false;formDirty=true;renderJobs();}};}
 $('form').addEventListener('input',()=>formDirty=true);$('form').addEventListener('change',()=>formDirty=true);

@@ -27,3 +27,27 @@ test('switching schools hides other records; sync and filters remain school-scop
 test('sync conflict preserves draft and marks failed, without affecting other schools',async()=>{const b=await browser();b.context.navigator.onLine=false;fill(b);b.api.getJobs()[0].hostname='A';await b.api.submitLocation(true);b.context.navigator.onLine=true;b.state.failApi=409;await b.api.sync();assert.equal(b.api.getQueue().length,1);assert.match(b.node('saveStatus').textContent,/Sync failed/);});
 test('login during delayed IndexedDB initialization waits for storage',async()=>{const b=await browser({storageDelay:40,earlyLogin:true});assert.equal(b.disabledDuringOpen,true);assert.equal(b.state.loginCalls,1);assert.equal(b.node('unlock').disabled,false);assert.doesNotMatch(b.node('loginError').textContent,/transaction/);});
 test('similar AP clears unique identifiers while retaining per-AP requirements',async()=>{const b=await browser();const first=b.api.getJobs()[0];Object.assign(first,{hostname:'OLD',serial:'S',mac:'aa:bb:cc:dd:ee:ff',bracket:true,equipmentOverride:'Scissor lift',relocation:'Yes',cabling:'Yes'});b.api.addJob('TR',first);const clone=b.api.getJobs()[1];assert.equal(clone.hostname,'');assert.equal(clone.serial,'');assert.equal(clone.mac,'');assert.equal(clone.bracket,true);assert.equal(clone.equipmentOverride,'Scissor lift');assert.equal(clone.cabling,'Yes');});
+test('paste one hostname per line creates separate TR APs and replaces the untouched blank row',async()=>{
+ const b=await browser();b.node('hostnamePaste').value='L1AP01\nL1AP02\nL1AP03';b.node('addHostnames').onclick();
+ assert.deepEqual(Array.from(b.api.getJobs(),j=>j.hostname),['L1AP01','L1AP02','L1AP03']);
+ assert.ok(b.api.getJobs().every(j=>j.type==='TR'&&j.relocation==='No'&&j.cabling==='No'&&!j.bracket));
+ assert.equal(new Set(b.api.getJobs().map(j=>j.id)).size,3);assert.equal(b.node('hostnamePaste').value,'');
+});
+test('hostname paste accepts Windows line endings, commas and tabs without splitting hostname letters',async()=>{
+ const b=await browser();b.node('hostnamePaste').value='  ArtRoomAP01\r\n\r\nCanteenAP02, L1AP03\tL1AP04  ';b.node('addHostnames').onclick();
+ assert.deepEqual(Array.from(b.api.getJobs(),j=>j.hostname),['ArtRoomAP01','CanteenAP02','L1AP03','L1AP04']);
+ b.node('hostnamePaste').value='L1AP03\nL1AP05';b.node('addHostnames').onclick();assert.equal(b.api.getJobs().length,5);assert.match(b.node('hostnamePasteStatus').textContent,/1 duplicate/);
+});
+
+test('pasting a list that includes an entered AP skips it and still adds the other hostnames',async()=>{
+ const b=await browser();b.api.getJobs()[0].hostname='L1AP01';b.node('hostnamePaste').value='L1AP01\nL1AP02\nL1AP03';b.node('addHostnames').onclick();
+ assert.deepEqual(Array.from(b.api.getJobs(),j=>j.hostname),['L1AP01','L1AP02','L1AP03']);
+ assert.match(b.node('hostnamePasteStatus').textContent,/Added 2 APs.*1 duplicate/);
+});
+test('hostname paste also handles copied backslash separators and shows empty-input feedback inline',async()=>{
+ const b=await browser();b.node('hostnamePaste').value=String.raw`L1AP01\
+L1AP02\
+L1AP03`;b.node('addHostnames').onclick();
+ assert.deepEqual(Array.from(b.api.getJobs(),j=>j.hostname),['L1AP01','L1AP02','L1AP03']);
+ b.node('hostnamePaste').value='';b.node('addHostnames').onclick();assert.match(b.node('hostnamePasteStatus').textContent,/Paste at least/);
+});
