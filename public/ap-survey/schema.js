@@ -107,3 +107,50 @@ export function parseInventory(text) {
   if(new Set(items.map(r=>r.hostname.toLowerCase())).size!==items.length)throw new Error('CSV contains duplicate hostnames.');
   return items;
 }
+
+export const LEGACY_SCHOOL_ID='00000000-0000-4000-8000-000000000001';
+export const schoolTypes=['Primary','Secondary'];
+export const vendorForSchool=type=>type==='Primary'?'Alcatel':type==='Secondary'?'Cisco':'Needs school details';
+export const surveyFields=['building','floor','roomNumber','roomName','network','lanRoom','locationEquipment','remarks'];
+export function schoolJob(type='TR') {
+  return {...newJob(type),cabling:'No',equipmentOverride:'',lanRoomOverride:''};
+}
+export function schoolLocation(raw) {
+  const record=normalizeLocation(raw);
+  const locationEquipment=record.locationEquipment||'None';
+  const jobs=record.jobs.map(job=>({...job,equipmentOverride:job.equipmentOverride??job.equipment??'',lanRoomOverride:job.lanRoomOverride??'',equipment:job.equipmentOverride===undefined?(job.equipment||locationEquipment):(job.equipmentOverride||locationEquipment)}));
+  const roomName=record.roomName??record.room??'';
+  return {...record,schoolId:record.schoolId||LEGACY_SCHOOL_ID,roomNumber:record.roomNumber||'',roomName,room:roomName,category:'',locationEquipment,jobs};
+}
+export function prepareSurvey(record) {
+  const locationEquipment=record.locationEquipment||'None';
+  return withJobSummary({...record,room:record.roomName,category:'',jobs:record.jobs.map(job=>({...job,equipment:job.equipmentOverride||locationEquipment,reason:job.relocation==='Yes'?job.reason:'',cabling:job.type==='TR'&&job.relocation!=='Yes'?'No':job.cabling}))});
+}
+export function surveyProblem(record) {
+  if(!UUID.test(record.schoolId||''))return{field:'school',message:'Select a school before saving.'};
+  if(!UUID.test(record.id||''))return{field:'roomName',message:'Invalid location ID.'};
+  for(const [field,max] of Object.entries({building:150,floor:30,roomNumber:100,roomName:200,remarks:3000})){
+    if(typeof record[field]!=='string'||record[field].length>max)return{field,message:`Check ${field}.`};
+  }
+  for(const [field,label] of [['building','building'],['floor','floor'],['roomName','room name']])if(!record[field].trim())return{field,message:`Enter the ${label}.`};
+  if(!lanRooms.includes(record.lanRoom))return{field:'lanRoom',message:'Select a LAN / Server Room.'};
+  if(!networkTypes.includes(record.network))return{field:'network',message:'Select the network type.'};
+  if(!equipmentOptions.includes(record.locationEquipment))return{field:'locationEquipment',message:'Select access equipment.'};
+  if(!Array.isArray(record.jobs)||record.jobs.length<1||record.jobs.length>100)return{field:'jobsTR',message:'Add at least one existing or additional AP (maximum 100).'};
+  const ids=new Set(),names=new Set();let tr=0,exp=0;
+  for(const job of record.jobs){
+    if(!job||typeof job!=='object')return{field:'jobsTR',message:'Check the AP details.'};
+    const number=job.type==='TR'?++tr:++exp,label=job.type==='TR'?`existing AP ${number}`:`additional AP ${number}`;
+    const fail=(field,message)=>({field,jobId:job.id,message});
+    if(typeof job.id!=='string'||!job.id||job.id.length>100||ids.has(job.id))return fail('hostname','AP job identifiers must be unique.');ids.add(job.id);
+    if(!['TR','Expansion'].includes(job.type))return fail('hostname','Invalid AP type.');
+    for(const [field,max] of Object.entries({hostname:150,model:150,serial:100,mac:30,reason:1000,notes:1000}))if(typeof job[field]!=='string'||job[field].length>max)return fail(field,`Check ${field} for ${label}.`);
+    if(job.type==='TR'&&!job.hostname.trim())return fail('hostname',`Enter the hostname for ${label}.`);
+    const name=job.hostname.trim().toLowerCase();if(name&&names.has(name))return fail('hostname',`Hostname ${job.hostname} is repeated in this location.`);if(name)names.add(name);
+    if(job.mac&&!/^[a-f\d]{12}$/i.test(job.mac.replace(/[:.\-]/g,'')))return fail('mac',`Check the MAC address for ${label}, or leave it blank.`);
+    if(!['Yes','No'].includes(job.relocation)||!cablingOptions.includes(job.cabling)||typeof job.bracket!=='boolean')return fail('hostname',`Check requirements for ${label}.`);
+    if(job.equipmentOverride!==''&&!equipmentOptions.includes(job.equipmentOverride))return fail('equipmentOverride',`Check access equipment for ${label}.`);
+    if(job.lanRoomOverride!==''&&!lanRooms.includes(job.lanRoomOverride))return fail('lanRoomOverride',`Check LAN room for ${label}.`);
+  }
+  return null;
+}

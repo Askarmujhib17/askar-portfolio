@@ -22,10 +22,11 @@ The app supports:
 - Multiple TR and expansion AP jobs under one location, without repeating room details.
 - CSV AP-inventory import and hostname lookup to fill model, serial and MAC.
 - Per-AP cabling, access equipment and L-bracket requirements, with quantity totals.
-- One shared classroom photo, extra photos for larger locations, and optional remarks.
-- Category and LAN room filters, record editing and photo downloads.
+- One optional wide-angle photo and optional remarks per location.
+- School workspaces for Primary (Alcatel) and Secondary (Cisco) AP surveys.
+- Building and LAN room filters, record editing and photo downloads.
 - CSV export, JSON backups and browser print-to-PDF.
-- Local offline drafts with automatic syncing when connectivity returns.
+- Local offline drafts, with syncing when the selected school is open and connectivity returns.
 
 Access uses a six-digit PIN checked by Cloudflare Pages Functions. Survey records are stored in Supabase, with photos in a private storage bucket. The app distinguishes between records saved on the device and records confirmed by the server.
 
