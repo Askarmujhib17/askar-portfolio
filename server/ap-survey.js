@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { UUID, validateEntry, validateLocation, normalizeLocation, withJobSummary } from '../public/ap-survey/schema.js';
+import { UUID, schoolLocation, prepareSurvey, surveyProblem, schoolTypes, vendorForSchool } from '../public/ap-survey/schema.js';
 
 const BUCKET = 'ap-survey-photos';
 const COOKIE = '__Host-ap-survey';
@@ -64,20 +64,20 @@ export async function readBody(request, max = MAX_BODY) {
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON.'); }
 }
 function dbError(error) {
-  if (error && /new_cabling|additional_ap_required|expansion_cabling|remarks|ap_jobs|photo_paths|ap_survey_inventory/.test(error.message || '')) throw new HttpError(503, 'Database upgrade needed: run the latest survey SQL migration in Supabase. Your draft remains on this device.');
+  if (error && /new_cabling|additional_ap_required|expansion_cabling|remarks|ap_jobs|photo_paths|ap_survey_inventory|school_id|room_name|room_number|location_equipment|ap_survey_schools/.test(error.message || '')) throw new HttpError(503, 'Database upgrade needed: run the latest survey SQL migration in Supabase. Your draft remains on this device.');
   if (error) throw new HttpError(503, 'Database request failed. Check the Supabase table and server settings; your form has not been cleared.');
 }
 export function fromRow(row) {
-  const record = { id: row.id, building: row.building, floor: row.floor, room: row.room, category: row.category, network: row.network_type, model: row.old_ap_model, hostname: row.old_ap_hostname, serial: row.old_ap_serial, mac: row.old_ap_mac, lanRoom: row.lan_room, relocation: row.relocation_required ? 'Yes' : 'No', reason: row.relocation_reason, newCabling: row.relocation_required ? (row.new_cabling || 'Not assessed') : '', additionalAP:row.additional_ap_required===true?'Yes':row.additional_ap_required===false?'No':'', expansionCabling:row.additional_ap_required===true?(row.expansion_cabling||'Not assessed'):'', remarks:row.remarks||'', hasPhoto: !!row.photo_path, updatedAt: row.updated_at, createdAt: row.created_at };
-  const result=normalizeLocation({...record,jobs:Array.isArray(row.ap_jobs)?row.ap_jobs:undefined,expansionUnrecorded:Array.isArray(row.ap_jobs)?!!row.expansion_unrecorded:!record.additionalAP});
+  const record = { schoolId:row.school_id, roomNumber:row.room_number||'', roomName:row.room_name||row.room, locationEquipment:row.location_equipment||'None', id: row.id, building: row.building, floor: row.floor, room: row.room, category: row.category, network: row.network_type, model: row.old_ap_model, hostname: row.old_ap_hostname, serial: row.old_ap_serial, mac: row.old_ap_mac, lanRoom: row.lan_room, relocation: row.relocation_required ? 'Yes' : 'No', reason: row.relocation_reason, newCabling: row.relocation_required ? (row.new_cabling || 'Not assessed') : '', additionalAP:row.additional_ap_required===true?'Yes':row.additional_ap_required===false?'No':'', expansionCabling:row.additional_ap_required===true?(row.expansion_cabling||'Not assessed'):'', remarks:row.remarks||'', hasPhoto: !!row.photo_path, updatedAt: row.updated_at, createdAt: row.created_at };
+  const result=schoolLocation({...record,jobs:Array.isArray(row.ap_jobs)?row.ap_jobs:undefined,expansionUnrecorded:Array.isArray(row.ap_jobs)?!!row.expansion_unrecorded:!record.additionalAP});
   const paths=row.photo_paths??(row.photo_path?[row.photo_path]:[]);
   return {...result,photo:undefined,photos:paths.map((_,remoteIndex)=>({remoteIndex})),photoCount:paths.length,hasPhoto:!!paths.length};
 }
 function toRow(entry) {
-  return { id: entry.id, building: entry.building.trim(), floor: entry.floor.trim(), room: entry.room.trim(), category: entry.category, network_type: entry.network, old_ap_model: entry.model.trim(), old_ap_hostname: entry.hostname.trim(), old_ap_serial: entry.serial.trim(), old_ap_mac: entry.mac.trim(), lan_room: entry.lanRoom, relocation_required: entry.relocation === 'Yes', relocation_reason: entry.relocation === 'Yes' ? entry.reason.trim() : '' };
+  return { school_id:entry.schoolId, room_number:entry.roomNumber.trim(), room_name:entry.roomName.trim(), location_equipment:entry.locationEquipment, id: entry.id, building: entry.building.trim(), floor: entry.floor.trim(), room: entry.room.trim(), category: entry.category, network_type: entry.network, old_ap_model: entry.model.trim(), old_ap_hostname: entry.hostname.trim(), old_ap_serial: entry.serial.trim(), old_ap_mac: entry.mac.trim(), lan_room: entry.lanRoom, relocation_required: entry.relocation === 'Yes', relocation_reason: entry.relocation === 'Yes' ? entry.reason.trim() : '' };
 }
-async function find(db, id) {
-  const { data, error } = await db.from('ap_survey_entries').select('*').eq('id', id).maybeSingle();
+async function find(db, id, schoolId) {
+  const { data, error } = await db.from('ap_survey_entries').select('*').eq('id', id).eq('school_id',schoolId).maybeSingle();
   dbError(error); return data;
 }
 export function photoBytes(value) {
@@ -92,17 +92,16 @@ export function photoBytes(value) {
   if (!valid) throw new HttpError(400, 'Photo contents do not match its image format.');
   return { bytes, type: `image/${match[1]}`, extension: match[1] === 'jpeg' ? 'jpg' : match[1] };
 }
-async function writeEntry(db, entry, expected, isNew) {
-  const multi=Array.isArray(entry?.jobs);
-  if(multi)entry=withJobSummary(entry);
-  const invalid = multi?validateLocation(entry):validateEntry(entry); if (invalid) throw new HttpError(400, invalid);
-  const old = await find(db, entry.id);
-  if (!isNew && !old) throw new HttpError(409, 'This entry was deleted on another device. Copy its details into a new entry.');
-  if(!multi&&Array.isArray(old?.ap_jobs))throw new HttpError(409,'This location uses the new multi-AP form. Reload the app before editing.');
+async function writeEntry(db, entry, expected, isNew, schoolId) {
+  if(entry?.schoolId!==schoolId)throw new HttpError(400,'Location does not match the selected school.');
+  const problem=surveyProblem(entry);if(problem)throw new HttpError(400,problem.message);
+  entry=prepareSurvey(entry);
+  const old=await find(db,entry.id,schoolId);
+  if(!isNew&&!old)throw new HttpError(409,'Location not found in this school. Refresh the register.');
   const expansion = entry.additionalAP === undefined ? old?.additional_ap_required ?? null : entry.additionalAP === '' ? null : entry.additionalAP === 'Yes';
   const oldPaths=old?.photo_paths??(old?.photo_path?[old.photo_path]:[]);
   const photoInputs=entry.photos===undefined?(entry.photo?[{data:entry.photo}]:oldPaths.map((_,remoteIndex)=>({remoteIndex}))):entry.photos;
-  if(!Array.isArray(photoInputs)||photoInputs.length>6||(multi&&entry.category==='Classrooms'&&photoInputs.length>1))throw new HttpError(400,'Use one classroom photo, or up to six photos for other locations.');
+  if(!Array.isArray(photoInputs)||photoInputs.length>Math.max(1,oldPaths.length))throw new HttpError(400,'Use one optional location photo. Existing extra photos may be retained.');
   const paths=[],images=[];let totalBytes=0;
   for(const photo of photoInputs){
     if(photo&&typeof photo.data==='string'){
@@ -113,14 +112,12 @@ async function writeEntry(db, entry, expected, isNew) {
     }else if(photo&&Number.isInteger(photo.remoteIndex)&&oldPaths[photo.remoteIndex])paths.push(oldPaths[photo.remoteIndex]);
     else throw new HttpError(400,'Photo reference is invalid. Refresh this location.');
   }
-  const needsPhoto=multi?entry.jobs.some(j=>j.type==='Expansion'||j.relocation==='Yes'):(entry.relocation==='Yes'||expansion===true);
-  if(needsPhoto&&!paths.length)throw new HttpError(400,'Attach a wide-angle photo for relocation or expansion.');
   const path=paths[0]||null;
   const row = { ...toRow(entry), photo_path: path, new_cabling: entry.relocation === 'Yes' ? (entry.newCabling ?? old?.new_cabling ?? 'Not assessed') : null };
   row.additional_ap_required = expansion;
   row.expansion_cabling = expansion===true?(entry.expansionCabling ?? old?.expansion_cabling ?? 'Not assessed'):null;
   row.remarks = entry.remarks ?? old?.remarks ?? '';
-  if(multi){row.ap_jobs=entry.jobs.map(job=>Object.fromEntries(['id','type','model','hostname','serial','mac','relocation','reason','cabling','equipment','bracket','notes'].map(key=>[key,job[key]])));row.expansion_unrecorded=!!entry.expansionUnrecorded;}
+  row.ap_jobs=entry.jobs.map(job=>Object.fromEntries(['id','type','model','hostname','serial','mac','relocation','reason','cabling','equipment','bracket','notes','equipmentOverride','lanRoomOverride'].map(key=>[key,job[key]])));row.expansion_unrecorded=!!entry.expansionUnrecorded;
   row.photo_paths=paths;
   const sameRow=existing=>existing&&Object.keys(row).every(key=>canonical(row[key])===canonical(existing[key]));
   const matchesOld=sameRow(old);
@@ -134,10 +131,10 @@ async function writeEntry(db, entry, expected, isNew) {
     if (error && String(error.statusCode) !== '409' && error.message !== 'The resource already exists') throw new HttpError(503, 'Photo upload failed. Your entry is still available locally.');
   }
   const query = isNew ? db.from('ap_survey_entries').insert(row)
-    : db.from('ap_survey_entries').update(row).eq('id', entry.id).eq('updated_at', expected);
+    : db.from('ap_survey_entries').update(row).eq('id', entry.id).eq('school_id',schoolId).eq('updated_at', expected);
   const { data, error } = await query.select('*').maybeSingle();
   if (error?.code === '23505') {
-    const concurrent = await find(db, entry.id);
+    const concurrent = await find(db, entry.id, schoolId);
     if (sameRow(concurrent)) return fromRow(concurrent);
     throw new HttpError(409, 'This entry was saved elsewhere with different details.');
   }
@@ -146,6 +143,18 @@ async function writeEntry(db, entry, expected, isNew) {
   // Retain old photo objects: an in-flight edit or backup may still use them.
   // Only the current photo_path is exposed. See setup notes for orphan cleanup.
   return fromRow(data);
+}
+function schoolRecord(row){return {id:row.id,name:row.name,type:row.school_type,vendor:vendorForSchool(row.school_type),createdAt:row.created_at};}
+function schoolInput(body){
+  if(typeof body?.name!=='string'||!body.name.trim()||body.name.trim().length>200||!schoolTypes.includes(body.type))throw new HttpError(400,'Enter a school name and choose Primary or Secondary.');
+  return {name:body.name.trim(),school_type:body.type};
+}
+async function requireSchool(db,id,writing=false){
+  if(!UUID.test(id||''))throw new HttpError(400,'Select a school. Reload the app if it still shows the old form.');
+  const {data,error}=await db.from('ap_survey_schools').select('*').eq('id',id).maybeSingle();dbError(error);
+  if(!data)throw new HttpError(404,'School not found.');
+  if(writing&&!schoolTypes.includes(data.school_type))throw new HttpError(409,'Complete the school name and Primary/Secondary details before saving new changes.');
+  return data;
 }
 export async function handle(request, env, suppliedDb) {
   try {
@@ -170,9 +179,26 @@ export async function handle(request, env, suppliedDb) {
     if (!await authenticated(request, env)) throw new HttpError(401, 'Enter your PIN to continue.');
     if (route === 'session' && request.method === 'GET') return json({ ok: true });
     if (route === 'logout' && request.method === 'POST') return json({ ok: true }, 200, { 'Set-Cookie': cookie('', 0) });
+    if(route==='schools'&&request.method==='GET'){
+      const {data,error}=await db.from('ap_survey_schools').select('*').order('created_at').order('id');dbError(error);return json({schools:data.map(schoolRecord)});
+    }
+    if(route==='schools'&&request.method==='POST'){
+      const values=schoolInput(await readBody(request,4096));
+      const {data,error}=await db.from('ap_survey_schools').insert(values).select('*').single();
+      if(error?.code==='23505')throw new HttpError(409,'A school with that name already exists. Open it from the list.');dbError(error);return json({school:schoolRecord(data)},201);
+    }
+    const schoolRoute=route.match(/^schools\/([a-f0-9-]+)$/i);
+    if(schoolRoute&&UUID.test(schoolRoute[1])&&request.method==='PUT'){
+      const values=schoolInput(await readBody(request,4096));
+      await requireSchool(db,schoolRoute[1]);
+      const {data,error}=await db.from('ap_survey_schools').update(values).eq('id',schoolRoute[1]).select('*').single();
+      if(error?.code==='23505')throw new HttpError(409,'Another school already uses this name.');dbError(error);return json({school:schoolRecord(data)});
+    }
+    const schoolId=url.searchParams.get('schoolId');
+    await requireSchool(db,schoolId,request.method!=='GET');
     if(route==='inventory'&&request.method==='GET'){
       const offset=Number(url.searchParams.get('offset')||0);if(!Number.isInteger(offset)||offset<0)throw new HttpError(400,'Invalid page.');
-      const {data,error}=await db.from('ap_survey_inventory').select('*').order('hostname_key').range(offset,offset+499);dbError(error);
+      const {data,error}=await db.from('ap_survey_inventory').select('*').eq('school_id',schoolId).order('hostname_key').range(offset,offset+499);dbError(error);
       return json({items:data,nextOffset:data.length===500?offset+500:null});
     }
     if(route==='inventory'&&request.method==='POST'){
@@ -183,19 +209,19 @@ export async function handle(request, env, suppliedDb) {
         if(!r.hostname.trim())throw new HttpError(400,'Hostname is required.');
         if(r.mac&&!/^[a-f\d]{12}$/i.test(r.mac.replace(/[:.\-]/g,'')))throw new HttpError(400,'Invalid inventory MAC address.');
         return {...r,hostname:r.hostname.trim(),hostname_key:r.hostname.trim().toLowerCase()};
-      }).map(({hostname_key,hostname,model,serial,mac})=>({hostname_key,hostname,model,serial,mac}));
+      }).map(({hostname_key,hostname,model,serial,mac})=>({school_id:schoolId,hostname_key,hostname,model,serial,mac}));
       if(new Set(rows.map(r=>r.hostname_key)).size!==rows.length)throw new HttpError(400,'Duplicate inventory hostnames.');
-      const {error}=await db.from('ap_survey_inventory').upsert(rows,{onConflict:'hostname_key'});dbError(error);return json({count:rows.length});
+      const {error}=await db.from('ap_survey_inventory').upsert(rows,{onConflict:'school_id,hostname_key'});dbError(error);return json({count:rows.length});
     }
     if (route === 'entries' && request.method === 'GET') {
       const offset = Number(url.searchParams.get('offset') || 0);
       if (!Number.isInteger(offset) || offset < 0) throw new HttpError(400, 'Invalid page.');
-      const { data, error } = await db.from('ap_survey_entries').select('*').order('created_at').order('id').range(offset, offset + 499);
+      const { data, error } = await db.from('ap_survey_entries').select('*').eq('school_id',schoolId).order('created_at').order('id').range(offset, offset + 499);
       dbError(error); return json({ entries: data.map(fromRow), nextOffset: data.length === 500 ? offset + 500 : null });
     }
     if (route === 'entries' && request.method === 'POST') {
       const { entry } = await readBody(request);
-      return json({ entry: await writeEntry(db, entry, null, true) }, 201);
+      return json({ entry: await writeEntry(db, entry, null, true, schoolId) }, 201);
     }
     const entryRoute = route.match(/^entries\/([a-f0-9-]+)$/i);
     if (entryRoute && UUID.test(entryRoute[1])) {
@@ -203,22 +229,22 @@ export async function handle(request, env, suppliedDb) {
       if (request.method === 'PUT') {
         const body = await readBody(request);
         if (body.entry?.id !== id) throw new HttpError(400, 'Entry ID mismatch.');
-        return json({ entry: await writeEntry(db, body.entry, body.expectedUpdatedAt, false) });
+        return json({ entry: await writeEntry(db, body.entry, body.expectedUpdatedAt, false, schoolId) });
       }
       if (request.method === 'DELETE') {
         const { expectedUpdatedAt } = await readBody(request, 1024);
         if (typeof expectedUpdatedAt !== 'string') throw new HttpError(400, 'Missing entry version.');
-        const old = await find(db, id);
+        const old = await find(db, id, schoolId);
         if (!old) return json({ ok: true });
         if (old.updated_at !== expectedUpdatedAt) throw new HttpError(409, 'This entry changed on another device. Refresh before deleting.');
-        const { data, error } = await db.from('ap_survey_entries').delete().eq('id', id).eq('updated_at', expectedUpdatedAt).select('id');
+        const { data, error } = await db.from('ap_survey_entries').delete().eq('id', id).eq('school_id',schoolId).eq('updated_at', expectedUpdatedAt).select('id');
         dbError(error); if (!data.length) throw new HttpError(409, 'This entry changed on another device.');
         return json({ ok: true });
       }
     }
     const photoRoute = route.match(/^photos\/([a-f0-9-]+)$/i);
     if (photoRoute && UUID.test(photoRoute[1]) && request.method === 'GET') {
-      const row = await find(db, photoRoute[1]);
+      const row = await find(db, photoRoute[1], schoolId);
       const paths=row?.photo_paths??(row?.photo_path?[row.photo_path]:[]);
       const index=Number(url.searchParams.get('photo')||0);
       if(!Number.isInteger(index)||index<0||!paths[index]) throw new HttpError(404, 'Photo not found.');

@@ -4,7 +4,35 @@ The portfolio remains at `/`; the survey is served at `/ap-survey/`.
 Vite copies `public/ap-survey/` into `dist/ap-survey/`. Cloudflare Pages builds
 `functions/api/ap-survey/[[path]].js` separately. No credentials belong in Git.
 
-## Before merging
+## School-workspace upgrade (17 October 2026)
+
+For an existing installation that already has the location-jobs upgrade:
+
+1. Sync existing drafts and download a JSON backup from the current app.
+2. Pause surveying while updating. Run
+   [`20261017_ap_survey_schools.sql`](supabase/migrations/20261017_ap_survey_schools.sql)
+   in the existing Supabase SQL Editor. It runs in a transaction and preserves
+   existing entries, AP jobs, inventory and photo paths. Do not rerun older
+   migrations after this one: they can restore retired constraints.
+3. Deploy this app version through the existing Cloudflare Git integration.
+   No new environment variables or storage buckets are needed.
+4. Unlock the app. Existing records appear under
+   **Existing survey — needs school assignment**. Edit that school's details to
+   supply its actual name and Primary/Secondary type. New school workspaces start
+   separately. The app does not guess which school owns older records or split
+   mixed historical records automatically.
+5. Reopen other devices/tabs online to load the new page. Older clients without
+   a selected school are rejected rather than writing into the wrong school.
+   Existing offline drafts remain in IndexedDB and are assigned to the existing
+   survey workspace. If a draft fails validation, edit it to fill required fields
+   and retry. Never clear browser data to resolve a sync failure.
+
+School creation and renaming require a connection. All schools share the current
+PIN; selecting a school separates its records, inventory, photos and exports,
+but does not give it a separate access code. Switches and WLCs are outside the
+current survey scope.
+
+## Initial setup
 
 1. In the existing Supabase project's SQL Editor, run
    `supabase/migrations/20261013_ap_survey_login_limits.sql`.
@@ -38,9 +66,12 @@ Vite copies `public/ap-survey/` into `dist/ap-survey/`. Cloudflare Pages builds
 
 - Open `https://askarmujhib.com/ap-survey/` and enter the PIN.
 - Save a test room with relocation No. On a second device, unlock and confirm it appears.
-- Edit, filter by category/LAN room, and verify the bottom count.
-- Save relocation Yes, a free-text reason and a wide-angle photo. Verify download
-  from the second device, then remove the test records.
+- Select a school, edit a location, filter by building/LAN room, and verify counts.
+- Save a multi-AP location with different cabling and bracket answers. Verify totals.
+- Save relocation/expansion without a photo (allowed), then attach one wide-angle
+  photo and verify download from a second device.
+- Open a second school and confirm its register and inventory stay separate.
+  Remove the test records afterward.
 - After opening online once, disconnect and capture a draft. Reconnect: the
   unsynced count should return to zero, and the record should appear elsewhere.
 - Unauthenticated `/api/ap-survey/entries` must return HTTP 401, not records.
@@ -62,12 +93,12 @@ Survey/photo API responses aren't cached by the service worker. Old photos are
 retained when replaced/deleted to avoid breaking concurrent requests. They consume
 storage: periodically review and remove unreferenced objects through the Storage
 API/dashboard, after taking a backup. Do not delete files referenced by
-`ap_survey_entries.photo_path`.
+`ap_survey_entries.photo_path` or any path in `photo_paths`.
 
 The page shell is cached for offline reopening after the first successful online
 visit. Drafts and photos awaiting upload persist in IndexedDB on that device.
 The form resets only after the local draft has been stored. Sync runs on save,
-login, reconnection and every 30 seconds while the page is open; it is not a
+opening a school, reconnection and every 30 seconds while that school is open; it is not a
 background guarantee after closing the browser. Entries without pending edits are
 cached locally for offline viewing. Previously uploaded photos require a network
 connection. Offline drafts are not yet available on other devices. Browser data
@@ -190,3 +221,28 @@ across locations they are warned and can be explicitly accepted (for example,
 when older surveys from another school share a hostname).
 
 L-brackets are available on every AP job, including TR without relocation. Bracket totals and CSV/review use every job's Yes/No answer. Common-requirement controls are collapsed by default and expand on click. No schema migration is required for this change.
+
+## Survey form and exports
+
+Location fields are building, floor, optional room number, free-text room name,
+LAN/server room and network type (MOE-Owned by default). Category is retired from
+the current form. Hostname is required for each existing AP; model, MAC and serial
+are optional. Add several hostnames at once or import the school's inventory CSV.
+Expansion quantity starts at zero. Each existing/expansion AP has its own cabling
+and L-bracket answers. Relocation, new cabling and brackets default to No.
+Location equipment defaults to None; individual APs can override equipment or
+LAN room under More details. One wide-angle location photo is optional regardless
+of relocation or expansion. Existing locations with several photos retain them.
+
+Save & next retains building, floor and LAN room and clears the other fields.
+A successful local save is shown separately from server-confirmed synchronization.
+The app scrolls to and focuses the first missing/invalid field.
+
+CSV contains one row per AP and exports the entire selected school, with effective
+LAN/equipment values and sync state. On-screen totals show both filtered and whole
+school counts. JSON backups contain the selected school, records, embedded photos,
+inventory and pending changes. School backups cannot be imported into another
+school. Existing IDs are skipped; imports do not overwrite records or replay
+pending deletions. Older backups require explicit school assignment and current
+required fields; multi-photo legacy locations cannot be created through import.
+Keep their original backups; already-saved multi-photo locations remain accessible.
